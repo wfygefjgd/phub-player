@@ -1,0 +1,53 @@
+name: Build iOS IPA (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/ios-ipa.yml'
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Build iOS release (no codesign)
+        working-directory: mobile
+        run: |
+          flutter build ios --release --no-codesign
+
+      - name: Package Payload IPA
+        working-directory: mobile
+        run: |
+          set -e
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          test -d "$APP_PATH"
+          rm -rf build/ipa_out
+          mkdir -p build/ipa_out/Payload
+          cp -R "$APP_PATH" build/ipa_out/Payload/
+          cd build/ipa_out
+          zip -qry ../PHUB-Player-iOS-unsigned.ipa Payload
+          ls -lh ../PHUB-Player-iOS-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PHUB-Player-iOS-unsigned
+          path: mobile/build/PHUB-Player-iOS-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

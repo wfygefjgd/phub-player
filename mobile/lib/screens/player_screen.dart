@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -144,6 +147,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _downloadCurrent() async {
+    if (kIsWeb || Platform.isIOS) return;
     if (_current == null || _detail == null) return;
     final url = _current!.url;
     final title = _detail!.title;
@@ -344,15 +348,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      icon: const Icon(Icons.download_rounded, size: 18),
-                      label: const Text('下载视频'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFFFF6B35),
+                    if (!kIsWeb && !Platform.isIOS) ...[
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        icon: const Icon(Icons.download_rounded, size: 18),
+                        label: const Text('下载视频'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFFF6B35),
+                        ),
+                        onPressed: _downloadCurrent,
                       ),
-                      onPressed: _downloadCurrent,
-                    ),
+                    ],
                   ],
                   const SizedBox(height: 24),
                   SelectableText(

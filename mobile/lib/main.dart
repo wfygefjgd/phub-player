@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -18,11 +21,13 @@ class PhubApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ios = !kIsWeb && Platform.isIOS;
     return MultiProvider(
       providers: [
         Provider(create: (_) => PhubApi()),
         Provider(create: (_) => Translator()),
-        ChangeNotifierProvider(create: (_) => DownloadService()),
+        // Downloads only on Android (iOS build strips download UI)
+        if (!ios) ChangeNotifierProvider(create: (_) => DownloadService()),
       ],
       child: MaterialApp(
         title: 'PHUB Player',
