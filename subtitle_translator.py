@@ -19,7 +19,7 @@ def translate_en_to_zh(text):
     try:
         import curl_cffi.requests as requests
         encoded = urllib.parse.quote(text[:5000])
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q={encoded}"
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q={encoded}"
         r = requests.get(url, impersonate="chrome",
                          proxies={"https": PROXY, "http": PROXY}, timeout=10)
         data = r.json()
@@ -29,13 +29,16 @@ def translate_en_to_zh(text):
 
 
 class RealtimeTranslator:
-    def __init__(self, ipc_path, whisper_model="tiny"):
-        self.ipc_path = ipc_path
+    def __init__(self, callback=None, whisper_model="tiny"):
+        # callback(zh_text) is invoked for each translated chunk (GUI display).
+        self.callback = callback
         self.running = False
         self._thread = None
         self.model = None
         self._sub_id = 0
         self._lock = threading.Lock()
+        self._srt_path = None
+        self._srt_entries = []  # (index, start_sec, end_sec, text)
 
     def _load_model(self):
         if self.model is None:
@@ -45,57 +48,32 @@ class RealtimeTranslator:
                 compute_type="int8"
             )
 
-    def _send_mpv(self, command):
-        if sys.platform == "win32":
-            return self._send_mpv_windows(command)
-        else:
-            return self._send_mpv_unix(command)
-
-    def _send_mpv_windows(self, command):
-        try:
-            import ctypes
-            from ctypes import wintypes
-            pipe_name = r"\\.\pipe\mpv-jsonipc"
-            kernel32 = ctypes.windll.kernel32
-            INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
-            h = kernel32.CreateFileW(
-                pipe_name,
-                0xC0000000,  # GENERIC_READ | GENERIC_WRITE
-                0, None, 3,  # OPEN_EXISTING
-                0, None
-            )
-            if h == INVALID_HANDLE_VALUE:
-                return None
+    def set_srt_path(self, path):
+        self._srt_path = path
+        self._srt_entries = []
+        if path and os.path.exists(path):
             try:
-                data = json.dumps({"command": command}).encode() + b"\n"
-                written = wintypes.DWORD()
-                kernel32.WriteFile(h, data, len(data), ctypes.byref(written), None)
-                buf = ctypes.create_string_buffer(4096)
-                read = wintypes.DWORD()
-                kernel32.ReadFile(h, buf, 4096, ctypes.byref(read), None)
-                resp = buf.value.decode().strip()
-                for line in resp.split("\n"):
-                    try:
-                        return json.loads(line)
-                    except:
-                        continue
-            finally:
-                kernel32.CloseHandle(h)
-        except:
-            return None
+                os.remove(path)
+            except:
+                pass
 
-    def _send_mpv_unix(self, command):
+    def _write_srt(self):
+        if not self._srt_path:
+            return
         try:
-            import socket
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect(self.ipc_path)
-            s.send(json.dumps({"command": command}).encode() + b"\n")
-            resp = s.recv(4096)
-            s.close()
-            return json.loads(resp.decode().strip().split("\n")[-1])
+            def fmt(t):
+                h, m, s = int(t // 3600), int((t % 3600) // 60), t % 60
+                return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+            lines = []
+            for i, (idx, a, b, txt) in enumerate(self._srt_entries, 1):
+                lines.append(str(i))
+                lines.append(f"{fmt(a)} --> {fmt(b)}")
+                lines.append(txt)
+                lines.append("")
+            with open(self._srt_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
         except:
-            return None
+            pass
 
     def start(self, stream_url):
         if self.running:
@@ -116,15 +94,19 @@ class RealtimeTranslator:
         self._load_model()
 
         chunk_duration = 10
+        is_local_stream = stream_url.startswith("http://127.0.0.1:") or stream_url.startswith("http://localhost:")
         ffmpeg_cmd = [
             FFMPEG,
-            "-http_proxy", PROXY,
+        ]
+        if not is_local_stream:
+            ffmpeg_cmd.extend(["-http_proxy", PROXY])
+        ffmpeg_cmd.extend([
             "-i", stream_url,
             "-vn", "-acodec", "pcm_s16le",
             "-ar", "16000", "-ac", "1",
             "-f", "wav",
             "-",
-        ]
+        ])
 
         try:
             proc = subprocess.Popen(
@@ -139,7 +121,7 @@ class RealtimeTranslator:
         bytes_per_sec = 16000 * 2
         chunk_bytes = chunk_duration * bytes_per_sec
         my_id = None
-
+        chunk_idx = 0
         with self._lock:
             self._sub_id += 1
             my_id = self._sub_id
@@ -153,12 +135,15 @@ class RealtimeTranslator:
             while len(audio_buffer) >= chunk_bytes and self.running:
                 chunk = audio_buffer[:chunk_bytes]
                 audio_buffer = audio_buffer[chunk_bytes:]
+                chunk_idx += 1
+                start_sec = (chunk_idx - 1) * chunk_duration
+                end_sec = chunk_idx * chunk_duration
 
                 audio_np = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
 
                 try:
                     segments, _ = self.model.transcribe(
-                        audio_np, language="en",
+                        audio_np,
                         beam_size=1, vad_filter=True,
                     )
                 except:
@@ -171,8 +156,15 @@ class RealtimeTranslator:
                     if not en_text:
                         continue
                     zh_text = translate_en_to_zh(en_text)
-                    self._send_mpv(
-                        ["show-text", zh_text, 10000]
-                    )
+                    if self.callback:
+                        try:
+                            self.callback(zh_text)
+                        except:
+                            pass
+                    if self._srt_path:
+                        with self._lock:
+                            self._srt_entries.append(
+                                (chunk_idx, start_sec, end_sec, zh_text))
+                        self._write_srt()
 
         proc.kill()

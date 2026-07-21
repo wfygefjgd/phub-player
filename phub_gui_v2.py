@@ -1,4 +1,3 @@
-"""PHUB API 图形界面 v2 - 左右分栏布局，内嵌mpv播放器"""
 import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -13,6 +12,20 @@ import json
 import os
 import tempfile
 import urllib.parse
+import http.server
+import socketserver
+import traceback
+import time
+
+DEBUG_LOG = os.path.join(os.path.expanduser("~"), "Documents", "Default Project", "debug.log")
+def _dbg(msg):
+    try:
+        with open(DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            f.flush()
+    except Exception:
+        pass
+    print(f"[DBG] {msg}", flush=True)
 
 from phub import Client
 from base_api.modules.config import config
@@ -89,74 +102,313 @@ class Toast:
             self.label = None
 
 
+class _StreamResolver:
+    """Holds the master playlist URL and resolves media segment URLs.
+    Refreshes tokens automatically when a segment request fails."""
+    def __init__(self, master_url, session, headers):
+        self.master_url = master_url
+        self.session = session
+        self.headers = headers
+        self.base_dir = None
+        self.seg_map = {}      # seg filename -> full url
+        self.media_text = ""
+        self._lock = threading.Lock()
+        self.resolve()
+
+    def resolve(self):
+        import m3u8 as _m3u8
+        r = self.session.get(self.master_url, headers=self.headers, timeout=15)
+        if r.status_code != 200:
+            return False
+        master = _m3u8.loads(r.text)
+        if not master.playlists:
+            return False
+        media_url = _m3u8.urljoin(self.master_url, master.playlists[0].uri)
+        r2 = self.session.get(media_url, headers=self.headers, timeout=15)
+        if r2.status_code != 200:
+            return False
+        media = _m3u8.loads(r2.text)
+        if not media.segments:
+            return False
+        base = media_url.rsplit("/", 1)[0]
+        self.base_dir = base
+        self.media_text = r2.text
+        self.seg_map = {}
+        for seg in media.segments:
+            raw_name = seg.uri.split("?")[0]
+            name = urllib.parse.urlparse(raw_name).path.lstrip("/") if raw_name.startswith("http") else raw_name.lstrip("/")
+            self.seg_map[name] = seg.uri if seg.uri.startswith("http") else base + "/" + seg.uri
+        return True
+
+    def refresh(self):
+        with self._lock:
+            return self.resolve()
+
+    def seg_url(self, filename):
+        with self._lock:
+            return self.seg_map.get(filename)
+
+    def fetch_segment(self, idx):
+        """Download segment by index, refreshing tokens on failure."""
+        with self._lock:
+            items = list(self.seg_map.items())
+        if idx >= len(items):
+            # seg_map may be keyed by filename; map index -> filename via media order
+            media = __import__("m3u8", fromlist=["loads"]).loads(self.media_text)
+            segs = media.segments if media.segments else []
+            if idx >= len(segs):
+                return None
+            name = segs[idx].uri.split("?")[0]
+        else:
+            name = items[idx][0]
+        url = self.seg_url(name)
+        if not url:
+            if not self.refresh():
+                return None
+            url = self.seg_url(name)
+        if not url:
+            return None
+        try:
+            r = self.session.get(url, headers=self.headers, timeout=60)
+            if r.status_code == 200:
+                return r.content
+        except Exception:
+            pass
+        if self.refresh():
+            url = self.seg_url(name)
+            if url:
+                try:
+                    r = self.session.get(url, headers=self.headers, timeout=60)
+                    if r.status_code == 200:
+                        return r.content
+                except Exception:
+                    pass
+        return None
+
+
+class _CurlProxyHandler(http.server.BaseHTTPRequestHandler):
+    resolver = None
+    session = None
+    req_headers = None
+    protocol_version = "HTTP/1.1"
+    _cache = {}
+    _cache_lock = threading.Lock()
+
+    def _get_segment(self, filename):
+        # try cache first
+        with _CurlProxyHandler._cache_lock:
+            if filename in _CurlProxyHandler._cache:
+                return _CurlProxyHandler._cache[filename]
+        url = self.resolver.seg_url(filename)
+        if not url:
+            if not self.resolver.refresh():
+                return None
+            url = self.resolver.seg_url(filename)
+        if not url:
+            return None
+        try:
+            r = self.session.get(url, headers=self.req_headers, timeout=60)
+            if r.status_code == 200:
+                with _CurlProxyHandler._cache_lock:
+                    _CurlProxyHandler._cache[filename] = r.content
+                return r.content
+        except Exception:
+            pass
+        # token likely expired -> refresh and retry once
+        if self.resolver.refresh():
+            url = self.resolver.seg_url(filename)
+            if url:
+                try:
+                    r = self.session.get(url, headers=self.req_headers, timeout=60)
+                    if r.status_code == 200:
+                        with _CurlProxyHandler._cache_lock:
+                            _CurlProxyHandler._cache[filename] = r.content
+                        return r.content
+                except Exception:
+                    pass
+        return None
+
+    def do_GET(self):
+        try:
+            if self.path == "/" or self.path.endswith(".m3u8"):
+                # serve the (rewritten) playlist
+                media_text = getattr(_CurlProxyHandler, "local_media_text", None) or self.resolver.media_text
+                body = media_text.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
+                return
+            # segment
+            filename = self.path.split("?")[0].lstrip("/")
+            data = self._get_segment(filename)
+            if data is None:
+                self.send_error(502)
+                return
+            rng = self.headers.get("Range")
+            start, end = 0, len(data) - 1
+            if rng and rng.startswith("bytes=") and "-" in rng:
+                try:
+                    a, b = rng[6:].split("-")
+                    start = int(a) if a else 0
+                    end = int(b) if b else len(data) - 1
+                except Exception:
+                    pass
+            if rng:
+                chunk = data[start:end + 1]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+                self.send_header("Content-Length", str(len(chunk)))
+            else:
+                chunk = data
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(chunk)))
+            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(chunk)
+            self.wfile.flush()
+        except Exception:
+            try:
+                self.send_error(502)
+            except Exception:
+                pass
+
+    def do_HEAD(self):
+        try:
+            if self.path.endswith(".m3u8"):
+                media_text = getattr(_CurlProxyHandler, "local_media_text", None) or self.resolver.media_text
+                body = media_text.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                return
+            filename = self.path.split("?")[0].lstrip("/")
+            data = self._get_segment(filename)
+            self.send_response(200 if data is not None else 502)
+            if data is not None:
+                self.send_header("Content-Length", str(len(data)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+        except Exception:
+            try:
+                self.send_error(502)
+            except Exception:
+                pass
+
+    def finish(self):
+        try:
+            super().finish()
+        except Exception:
+            pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            self.close_connection = True
+        except Exception:
+            self.close_connection = True
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+class _ThreadingHTTPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class MpvPlayer:
     def __init__(self):
         self.proc = None
         self.playing = False
-        if sys.platform == "win32":
-            self._ipc_path = r"\\.\pipe\phub-mpv-ipc"
-        else:
-            self._ipc_path = os.path.join(tempfile.gettempdir(), "phub_mpv_ipc.sock")
+        self._ipc_path = r"\\.\pipe\phub-mpv-ipc" if sys.platform == "win32" else os.path.join(tempfile.gettempdir(), "phub_mpv_ipc.sock")
 
     def _send(self, command):
         if not self.proc or self.proc.poll() is not None:
-            return
+            return None
         try:
             if sys.platform == "win32":
                 import ctypes
                 from ctypes import wintypes
                 kernel32 = ctypes.windll.kernel32
                 INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
-                h = kernel32.CreateFileW(
-                    self._ipc_path, 0xC0000000, 0, None, 3, 0, None
-                )
+                h = kernel32.CreateFileW(self._ipc_path, 0xC0000000, 0, None, 3, 0, None)
                 if h == INVALID_HANDLE_VALUE:
-                    return
+                    return None
                 try:
                     data = json.dumps({"command": command}).encode() + b"\n"
                     written = wintypes.DWORD()
                     kernel32.WriteFile(h, data, len(data), ctypes.byref(written), None)
+                    buf = ctypes.create_string_buffer(4096)
+                    read = wintypes.DWORD()
+                    if kernel32.ReadFile(h, buf, 4096, ctypes.byref(read), None):
+                        return buf.value.decode(errors="replace")
                 finally:
                     kernel32.CloseHandle(h)
             else:
                 import socket
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.settimeout(0.3)
+                s.settimeout(0.5)
                 s.connect(self._ipc_path)
                 s.send(json.dumps({"command": command}).encode() + b"\n")
+                resp = s.recv(4096).decode(errors="replace")
                 s.close()
-        except:
-            pass
+                return resp
+        except Exception:
+            return None
+        return None
 
-    def play(self, url, wid=None):
+    def play(self, url, wid=None, proxy=None, referer=None):
+        _dbg(f"MpvPlayer.play: url={url[:80]}...")
         self.stop()
         try:
+            ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             args = [
                 MPV_PATH, url, "--no-terminal",
                 f"--input-ipc-server={self._ipc_path}",
                 "--keep-open=no", "--volume=100",
-                "--http-proxy=http://127.0.0.1:10808",
-                "--http-header-fields=Referer: https://www.pornhub.com/",
+                f"--user-agent={ua}",
                 "--no-input-default-bindings",
                 "--input-conf=MBTN_LEFT cycle pause",
+                "--demuxer-readahead-secs=120",
+                "--cache=yes",
+                "--cache-secs=120",
             ]
+            if referer:
+                args.append(f"--http-header-fields=Referer: {referer},Origin: {referer}")
+            if proxy:
+                args.append(f"--http-proxy={proxy}")
             if wid:
                 args.append(f"--wid={wid}")
             else:
                 args.append("--force-window")
+            mpv_log = os.path.join(os.path.expanduser("~"), "Documents", "Default Project", "mpv.log")
             self.proc = subprocess.Popen(
-                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                args, stdin=subprocess.DEVNULL,
+                stdout=open(mpv_log, "w", encoding="utf-8"),
+                stderr=subprocess.STDOUT
             )
             self.playing = True
-        except Exception:
-            pass
+            _dbg(f"MpvPlayer.play: mpv spawned pid={self.proc.pid}")
+        except Exception as e:
+            _dbg(f"MpvPlayer.play: exception: {e}")
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
             self._send(["quit"])
             try:
-                self.proc.wait(timeout=0.5)
-            except:
+                self.proc.wait(timeout=0.7)
+            except Exception:
                 pass
             if self.proc.poll() is None:
                 self.proc.kill()
@@ -166,52 +418,27 @@ class MpvPlayer:
     def toggle_pause(self):
         self._send(["cycle", "pause"])
 
-    def seek(self, pct):
-        self._send(["seek", str(pct), "absolute"])
+    def seek(self, seconds):
+        self._send(["seek", str(seconds), "absolute"])
+
+    def seek_relative(self, secs):
+        self._send(["seek", str(secs), "relative"])
 
     def set_volume(self, val):
         self._send(["set_property", "volume", str(int(val))])
 
     def _query(self, prop):
         try:
-            if sys.platform == "win32":
-                import ctypes
-                from ctypes import wintypes
-                kernel32 = ctypes.windll.kernel32
-                INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
-                h = kernel32.CreateFileW(
-                    self._ipc_path,
-                    0xC0000000, 0, None, 3, 0, None
-                )
-                if h == INVALID_HANDLE_VALUE:
-                    return 0
-                try:
-                    data = json.dumps({"command": ["get_property", prop]}).encode() + b"\n"
-                    written = wintypes.DWORD()
-                    kernel32.WriteFile(h, data, len(data), ctypes.byref(written), None)
-                    buf = ctypes.create_string_buffer(4096)
-                    read = wintypes.DWORD()
-                    kernel32.ReadFile(h, buf, 4096, ctypes.byref(read), None)
-                    resp = buf.value.decode().strip()
-                    for line in resp.split("\n"):
-                        d = json.loads(line)
-                        if d.get("data") is not None:
-                            return float(d["data"])
-                finally:
-                    kernel32.CloseHandle(h)
-            else:
-                import socket
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.settimeout(0.3)
-                s.connect(self._ipc_path)
-                s.send(json.dumps({"command": ["get_property", prop]}).encode() + b"\n")
-                resp = s.recv(4096).decode().strip()
-                s.close()
-                for line in resp.split("\n"):
-                    d = json.loads(line)
-                    if d.get("data") is not None:
-                        return float(d["data"])
-        except:
+            resp = self._send(["get_property", prop])
+            if not resp:
+                return 0
+            for line in resp.split("\n"):
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                if data.get("data") is not None:
+                    return float(data["data"])
+        except Exception:
             pass
         return 0
 
@@ -224,6 +451,7 @@ class MpvPlayer:
 
 class PHUBApp:
     def __init__(self, root):
+        _dbg("PHUBApp.__init__ start")
         self.root = root
         self.root.title("PHUB API v5.2.0")
         self.root.geometry("1280x720")
@@ -235,7 +463,8 @@ class PHUBApp:
         self.client = Client()
         self.toast = Toast(root)
         self.mpv = MpvPlayer()
-        self.translator = RealtimeTranslator(self.mpv._ipc_path)
+        self.translator = RealtimeTranslator(callback=self._on_subtitle_text)
+        self._proxy_server = None
         self._running = True
 
         style = ttk.Style()
@@ -267,6 +496,10 @@ class PHUBApp:
         self.mpv_frame = tk.Frame(self.left_container, bg="#000")
         self.mpv_frame.pack(side="top", fill="both", expand=True)
 
+        self._sub_label = tk.Label(self.left_container, text="",
+                                   bg="#000", fg="#ffeb3b", font=("Microsoft YaHei", 11),
+                                   anchor="center", wraplength=900, height=2)
+
         self.player_bar = tk.Frame(self.left_container, bg="#1a1a1a", height=40)
         self.player_bar.pack(side="bottom", fill="x")
         self.player_bar.pack_propagate(False)
@@ -280,6 +513,9 @@ class PHUBApp:
         self.btn_play = tk.Button(btn_frame, text="\u25b6", bg="#333", fg="#fff", width=3,
                                   command=self._toggle_play, relief="flat", font=("Segoe UI", 11))
         self.btn_play.pack(side="left", padx=2)
+        self.player_sub_btn = tk.Button(btn_frame, text="字幕", bg="#444", fg="#aaa", width=4,
+                                  command=self._toggle_subtitle, relief="flat", font=("Segoe UI", 9))
+        self.player_sub_btn.pack(side="left", padx=2)
 
         self.progress_canvas = tk.Canvas(self.player_bar, bg="#333", height=12,
                                           highlightthickness=0, cursor="hand2")
@@ -321,6 +557,7 @@ class PHUBApp:
         self.status_lbl.pack(fill="x", padx=10, pady=(0, 5))
 
         self._video_playing = False
+        self._current_expected_duration = 0
         self.mpv_frame.update_idletasks()
         self._mpv_wid = self.mpv_frame.winfo_id()
 
@@ -328,11 +565,13 @@ class PHUBApp:
         threading.Thread(target=self._run_loop, daemon=True).start()
         self._start_progress_loop()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<Destroy>", lambda e: _dbg("root <Destroy>"))
 
         self.root.bind("<Key>", self._on_key)
         self.root.focus_set()
         self._keep_focus()
         self.root.after(500, self.do_recommend)
+        _dbg("PHUBApp.__init__ done")
 
     def _on_key(self, e):
         if e.keysym == "Left":
@@ -352,7 +591,7 @@ class PHUBApp:
 
     def _seek_relative(self, secs):
         if self._video_playing:
-            self.mpv._send(["seek", str(secs), "relative"])
+            self.mpv.seek_relative(secs)
 
     def _set_dark_title_bar(self):
         def _apply():
@@ -375,9 +614,17 @@ class PHUBApp:
         self.root.after(100, _apply)
 
     def _on_close(self):
+        _dbg("_on_close called")
         self._running = False
         self.translator.stop()
         self.mpv.stop()
+        if self._proxy_server:
+            try:
+                self._proxy_server.shutdown()
+                self._proxy_server.server_close()
+            except Exception:
+                pass
+            self._proxy_server = None
         self.root.destroy()
 
     def _toggle_play(self):
@@ -396,26 +643,54 @@ class PHUBApp:
         self.time_label.config(text="00:00 / 00:00")
 
     def _show_player(self):
+        _dbg("_show_player start")
         if self._video_playing:
             return
         self._video_playing = True
         self.right_panel.pack_forget()
         self.sep.pack(side="left", fill="y")
         self.left_container.pack(side="left", fill="both", expand=True)
+        self.mpv_frame.pack(side="top", fill="both", expand=True)
+        self._sub_label.pack(side="bottom", fill="x")
         self.mpv_frame.update_idletasks()
         self._mpv_wid = self.mpv_frame.winfo_id()
+        _dbg(f"_show_player wid={self._mpv_wid}")
         self._draw_progress()
         self._draw_vol()
+        _dbg("_show_player done")
 
     def _close_video(self):
+        _dbg("_close_video start")
         self._video_playing = False
+        self._current_expected_duration = 0
+        self.translator.stop()
         self.mpv.stop()
+        if self._proxy_server:
+            try:
+                self._proxy_server.shutdown()
+                self._proxy_server.server_close()
+            except Exception:
+                pass
+            self._proxy_server = None
+        self._sub_label.pack_forget()
+        self._sub_label.config(text="")
+        if hasattr(self, "sub_btn"):
+            self.sub_btn.config(text="实时字幕: 关", bg="#444", fg="#aaa")
+        if hasattr(self, "player_sub_btn"):
+            self.player_sub_btn.config(text="字幕", bg="#444", fg="#aaa")
         self.btn_play.config(text="\u25b6")
         self._progress_pct = 0
         self.time_label.config(text="00:00 / 00:00")
         self.left_container.pack_forget()
         self.sep.pack_forget()
         self.right_panel.pack(side="right", fill="both", expand=True)
+        _dbg("_close_video done")
+
+    def _on_subtitle_text(self, zh_text):
+        try:
+            self.root.after(0, lambda: self._sub_label.config(text=zh_text))
+        except Exception:
+            pass
 
     def _draw_progress(self):
         self.progress_canvas.delete("all")
@@ -462,6 +737,9 @@ class PHUBApp:
             if self._video_playing and self.mpv.playing and self.mpv.proc and self.mpv.proc.poll() is None:
                 pos = self.mpv.get_position()
                 dur = self.mpv.get_duration()
+                expected = getattr(self, "_current_expected_duration", 0) or 0
+                if expected > 0 and (dur <= 0 or dur < expected * 0.5):
+                    dur = expected
                 if pos > 0 and dur > 0 and dur < 120 and pos > dur:
                     self._mpv_duration_override = max(self._mpv_duration_override, dur)
                     dur = 0
@@ -489,16 +767,30 @@ class PHUBApp:
         return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
     def _toggle_subtitle(self):
+        def set_sub_buttons(on):
+            text = "实时字幕: 开" if on else "实时字幕: 关"
+            short = "字幕开" if on else "字幕"
+            bg = "#238636" if on else "#444"
+            fg = "#fff" if on else "#aaa"
+            if hasattr(self, "sub_btn"):
+                self.sub_btn.config(text=text, bg=bg, fg=fg)
+            if hasattr(self, "player_sub_btn"):
+                self.player_sub_btn.config(text=short, bg=bg, fg=fg)
         if self.translator.running:
             self.translator.stop()
-            self.sub_btn.config(text="实时字幕: 关", bg="#444", fg="#aaa")
+            set_sub_buttons(False)
+            self._sub_label.config(text="")
             self.toast.show("字幕已关闭")
         else:
             self._current_stream = getattr(self, '_current_stream', None)
             if self._current_stream:
                 self.translator.stop()
+                srt_path = None
+                if self._current_stream.startswith("http") is False and self._current_stream.lower().endswith(".m3u8"):
+                    srt_path = os.path.join(os.path.dirname(self._current_stream), "subs.srt")
+                self.translator.set_srt_path(srt_path)
                 self.translator.start(self._current_stream)
-                self.sub_btn.config(text="实时字幕: 开", bg="#238636", fg="#fff")
+                set_sub_buttons(True)
                 self.toast.show("字幕已开启")
             else:
                 self.toast.show("请先播放视频")
@@ -549,63 +841,122 @@ class PHUBApp:
         streams.sort(key=lambda x: x[0], reverse=True)
         return streams[0][1]
 
-    def _resolve_m3u8(self, m3u8_text):
-        import m3u8 as _m3u8
+    def _make_local_playlist(self, resolver):
+        lines = []
+        for line in resolver.media_text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                lines.append(line)
+                continue
+            raw_name = s.split("?")[0]
+            name = urllib.parse.urlparse(raw_name).path.lstrip("/") if raw_name.startswith("http") else raw_name.lstrip("/")
+            lines.append("/" + name)
+        return "\n".join(lines) + "\n"
+
+    def _start_stream_proxy(self, master_url):
         import curl_cffi.requests as _req
         proxy = {"http": "http://127.0.0.1:10808", "https": "http://127.0.0.1:10808"}
         session = _req.Session(impersonate="chrome", proxies=proxy)
-        headers = {"Referer": "https://www.pornhub.com/"}
-        try:
-            master = _m3u8.loads(m3u8_text)
-        except Exception:
+        headers = {
+            "Referer": "https://www.pornhub.com/",
+            "Origin": "https://www.pornhub.com",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        resolver = _StreamResolver(master_url, session, headers)
+        if not resolver.seg_map:
             return None
-        if not master.playlists:
-            return None
-        sorted_pls = sorted(master.playlists,
-            key=lambda p: (p.stream_info.resolution[0] if p.stream_info.resolution else 0))
-        for pl in reversed(sorted_pls):
+        if self._proxy_server:
             try:
-                current_url = pl.absolute_uri
-                for _ in range(5):
-                    r = session.get(current_url, headers=headers, timeout=10)
-                    if r.status_code != 200:
-                        break
-                    parsed = _m3u8.loads(r.text)
-                    if parsed.is_variant and parsed.playlists:
-                        best_sub = max(parsed.playlists,
-                            key=lambda p: (p.stream_info.resolution[0] if p.stream_info.resolution else 0))
-                        current_url = _m3u8.urljoin(current_url, best_sub.uri)
-                    else:
-                        seg_count = len(parsed.segments)
-                        if seg_count >= 3:
-                            return current_url
-                        break
+                self._proxy_server.shutdown()
+                self._proxy_server.server_close()
             except Exception:
-                continue
+                pass
+            self._proxy_server = None
+        _CurlProxyHandler.resolver = resolver
+        _CurlProxyHandler.session = session
+        _CurlProxyHandler.req_headers = headers
+        _CurlProxyHandler.local_media_text = self._make_local_playlist(resolver)
+        with _CurlProxyHandler._cache_lock:
+            _CurlProxyHandler._cache = {}
+        server = _ThreadingHTTPServer(("127.0.0.1", 0), _CurlProxyHandler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self._proxy_server = server
+        local_url = f"http://127.0.0.1:{port}/local.m3u8"
+        _dbg(f"_start_stream_proxy: {local_url}")
+        return local_url
+
+    def _resolve_m3u8(self, video):
+        # Online playback through a local streaming proxy. This is NOT full
+        # download: each segment is fetched on demand with browser headers and
+        # fresh tokens, then streamed to mpv from localhost.
+        urls = video.get_m3u8_urls
+        if not urls:
+            return None
+        candidates = [k for k in urls.keys() if max(k) <= 1280 and min(k) <= 720]
+        for quality in sorted(candidates or urls.keys(), key=lambda k: k[0] * k[1], reverse=True):
+            stream = urls[quality]
+            _dbg(f"_resolve_m3u8: trying proxy stream {quality} -> {stream[:80]}")
+            local_url = self._start_stream_proxy(stream)
+            if local_url:
+                return local_url
         return None
 
     def _play_by_url(self, url, title, status_lbl):
-        async def f():
-            v = await self.client.get_video(url)
-            await v.ensure_html()
-            stream = self._resolve_m3u8(v.m3u8_base_url)
-            return (stream, v.title, url)
-        def done(r):
-            stream, vtitle, vurl = r
-            if stream:
-                t = title or vtitle
-                status_lbl.config(text=f"播放中: {t}")
-                self.status_lbl.config(text=f"播放: {t}")
-                self._current_stream = stream
-                self._show_player()
-                self.btn_play.config(text="\u23f8")
-                self.mpv.play(stream, wid=self._mpv_wid)
-                if self.translator.running:
-                    self.translator.stop()
-                    self.translator.start(stream)
-            else:
-                messagebox.showerror("错误", "无法获取播放地址")
-        self.run_async(f(), done)
+        _dbg(f"_play_by_url: {url}")
+        self.root.after(0, lambda: status_lbl.config(text="加载中: 获取视频信息..."))
+        def _get_video():
+            fut = asyncio.run_coroutine_threadsafe(self.client.get_video(url), self._loop)
+            v = fut.result(timeout=30)
+            fut2 = asyncio.run_coroutine_threadsafe(v.ensure_html(), self._loop)
+            fut2.result(timeout=30)
+            return v
+        def _bg():
+            try:
+                _dbg("_bg: start _get_video")
+                v = _get_video()
+                _dbg("_bg: got video, checking duration")
+                dur = v.duration or 0
+                urls = v.get_m3u8_urls
+                if not urls:
+                    raise RuntimeError("No HLS streams found")
+                _dbg("_bg: resolving m3u8 (online stream)")
+                self.root.after(0, lambda: status_lbl.config(text="加载中: 获取在线播放地址..."))
+                stream = self._resolve_m3u8(v)
+                if not stream:
+                    raise RuntimeError("无法解析播放地址")
+                _dbg(f"_bg: resolved -> {stream[:80]}")
+                self.root.after(0, lambda: self._on_stream_ready(stream, title, status_lbl, v.title, dur))
+            except Exception as e:
+                _dbg(f"_bg: exception: {e}")
+                self.root.after(0, lambda: messagebox.showerror("错误", str(e)))
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_stream_ready(self, stream, title, status_lbl, vtitle, expected_duration=0):
+        _dbg(f"_on_stream_ready: stream={stream}")
+        if stream:
+            t = title or vtitle
+            status_lbl.config(text=f"播放中: {t}")
+            self.status_lbl.config(text=f"播放: {t}")
+            self._current_stream = stream
+            self._current_expected_duration = expected_duration or 0
+            self._show_player()
+            self.btn_play.config(text="\u23f8")
+            _dbg("calling mpv.play")
+            is_local_proxy = stream.startswith("http://127.0.0.1:") or stream.startswith("http://localhost:")
+            proxy = "http://127.0.0.1:10808" if stream.startswith("http") and not is_local_proxy else None
+            referer = "https://www.pornhub.com/" if stream.startswith("http") and not is_local_proxy else None
+            self.mpv.play(stream, wid=self._mpv_wid, proxy=proxy, referer=referer)
+            _dbg("mpv.play returned")
+            if self.translator.running:
+                self.translator.stop()
+            if hasattr(self, "sub_btn"):
+                self.sub_btn.config(text="实时字幕: 关", bg="#444", fg="#aaa")
+            if hasattr(self, "player_sub_btn"):
+                self.player_sub_btn.config(text="字幕", bg="#444", fg="#aaa")
+            self._sub_label.config(text="")
+        else:
+            messagebox.showerror("错误", "无法获取播放地址")
 
     def _build_search(self, p):
         top = tk.Frame(p, bg="#1e1e1e"); top.pack(fill="x", padx=10, pady=(10,5))
@@ -703,7 +1054,7 @@ class PHUBApp:
                 "https://www.pornhub.com/video?o=pg",
             ]
             _rnd.shuffle(urls)
-            urls = urls[:5]
+            urls = urls[:7]
             seen = set()
             results = []
             for u in urls:
@@ -736,10 +1087,10 @@ class PHUBApp:
                                 results.append((title, dur, url))
                 except:
                     continue
-                if len(results) >= 40:
+                if len(results) >= 70:
                     break
             _rnd.shuffle(results)
-            results = results[:30]
+            results = results[:50]
             self.root.after(0, lambda: self._fill_recommend(results))
         except Exception as e:
             self.root.after(0, lambda: self.r_lbl.config(text=f"加载失败: {e}"))
@@ -868,17 +1219,45 @@ class PHUBApp:
         self.dl_log.see("end"); self.dl_log.config(state="disabled")
 
     def _on_dblclick(self, tree, url_idx, title_idx, status_lbl):
+        _dbg(f"_on_dblclick: tree={tree}, selection={tree.selection()}")
         sel = tree.selection()
-        if not sel: return
+        if not sel: 
+            _dbg("_on_dblclick: no selection, return")
+            return
         vals = tree.item(sel[0])["values"]
         url = vals[url_idx]; title = vals[title_idx]
+        _dbg(f"_on_dblclick: url={url}, title={title}")
         status_lbl.config(text=f"加载中: {title}...")
         self._play_by_url(url, title, status_lbl)
 
 
 if __name__ == "__main__":
+    import sys as _sys, traceback as _tb
+
+    def _log_err(msg):
+        try:
+            log_path = os.path.join(os.path.expanduser("~"), "Documents", "Default Project", "error.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+
+    def _excepthook(etype, evalue, etb):
+        _log_err("UNCAUGHT: " + "".join(_tb.format_exception(etype, evalue, etb)))
+
+    _sys.excepthook = _excepthook
+    try:
+        import threading as _th
+        _th.excepthook = lambda args: _log_err("THREAD: " + "".join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+    except Exception:
+        pass
+
     try:
         root = tk.Tk()
+        def _report(etype, evalue, etb):
+            _log_err("TK_CALLBACK: " + "".join(_tb.format_exception(etype, evalue, etb)))
+            messagebox.showerror("错误", str(evalue))
+        root.report_callback_exception = _report
         PHUBApp(root)
         root.mainloop()
     except Exception:
