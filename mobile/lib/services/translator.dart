@@ -14,17 +14,33 @@ class Translator {
   final Dio _dio;
   final Map<String, String> _cache = {};
 
-  Future<String> enToZh(String text) async {
-    final key = text.trim();
-    if (key.isEmpty) return text;
+  static final _zhRe = RegExp(r'[\u4e00-\u9fff]');
+
+  /// True if [text] contains CJK unified ideographs.
+  bool containsChinese(String text) => _zhRe.hasMatch(text);
+
+  Future<String> enToZh(String text) async =>
+      _translate(text, from: 'en', to: 'zh-CN');
+
+  /// Chinese / auto → English (for search queries).
+  Future<String> zhToEn(String text) async =>
+      _translate(text, from: 'zh-CN', to: 'en');
+
+  Future<String> _translate(
+    String text, {
+    required String from,
+    required String to,
+  }) async {
+    final key = '${from}_$to:${text.trim()}';
+    if (text.trim().isEmpty) return text;
     final hit = _cache[key];
     if (hit != null) return hit;
     try {
       final encoded = Uri.encodeQueryComponent(
-        key.length > 5000 ? key.substring(0, 5000) : key,
+        text.length > 5000 ? text.substring(0, 5000) : text,
       );
       final url =
-          'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=$encoded';
+          'https://translate.googleapis.com/translate_a/single?client=gtx&sl=$from&tl=$to&dt=t&q=$encoded';
       final res = await _dio.get(url);
       final data = res.data;
       if (data is! List || data.isEmpty || data[0] is! List) return text;
@@ -34,9 +50,13 @@ class Translator {
           buf.write(part[0]);
         }
       }
-      final out = buf.toString();
+      final out = buf.toString().trim();
       final result = out.isEmpty ? text : out;
       _cache[key] = result;
+      // Also cache plain key for enToZh batch compatibility
+      if (from == 'en' && to == 'zh-CN') {
+        _cache[text.trim()] = result;
+      }
       return result;
     } catch (_) {
       return text;
@@ -51,7 +71,7 @@ class Translator {
     final needTexts = <String>[];
     for (var i = 0; i < texts.length; i++) {
       final t = texts[i];
-      final hit = _cache[t.trim()];
+      final hit = _cache[t.trim()] ?? _cache['en_zh-CN:${t.trim()}'];
       if (hit != null) {
         out[i] = hit;
       } else {
@@ -88,6 +108,7 @@ class Translator {
         final zh = k < lines.length && lines[k].isNotEmpty ? lines[k] : src;
         out[needIdx[k]] = zh;
         _cache[src.trim()] = zh;
+        _cache['en_zh-CN:${src.trim()}'] = zh;
       }
       return out;
     } catch (_) {

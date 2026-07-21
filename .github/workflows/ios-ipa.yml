@@ -28,63 +28,69 @@ jobs:
         working-directory: mobile
         run: flutter build ios --release --no-codesign
 
-      - name: Make IPA (Payload layout + .ipa name)
+      - name: Package IPA for Sideloadly / 全能签
         working-directory: mobile
         run: |
           set -euo pipefail
           APP="build/ios/iphoneos/Runner.app"
           test -d "$APP"
-          test -x "$APP/Runner" || test -f "$APP/Runner"
           test -f "$APP/Info.plist"
+          test -f "$APP/Runner"
 
-          # Clean workspace
-          rm -rf /tmp/phub_ipa
-          mkdir -p /tmp/phub_ipa/Payload
+          # Absolute staging dir
+          STAGE="/tmp/phub_payload_$$"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/Payload"
 
-          # Copy .app into Payload/ (preserve symlinks)
-          /usr/bin/ditto "$APP" /tmp/phub_ipa/Payload/Runner.app
+          # Preserve symlinks (Flutter.framework)
+          /usr/bin/ditto "$APP" "$STAGE/Payload/Runner.app"
 
-          # Create IPA as a zip whose ROOT entry is "Payload/"
-          # Use absolute out path and force .ipa suffix
-          OUT="/tmp/phub_ipa/PHUB-Player-iOS.ipa"
-          rm -f "$OUT"
+          # IPA file name MUST end with .ipa
+          IPA_NAME="PHUB-Player-iOS.ipa"
+          IPA_PATH="/tmp/$IPA_NAME"
+          rm -f "$IPA_PATH"
+
+          # Zip so archive root is exactly: Payload/Runner.app/...
           (
-            cd /tmp/phub_ipa
-            /usr/bin/zip -qry -y "$OUT" Payload
+            cd "$STAGE"
+            /usr/bin/zip -qr -y "$IPA_PATH" Payload
           )
 
-          # Sanity checks
-          ls -lh "$OUT"
-          file "$OUT"
+          # Validate
+          ls -lh "$IPA_PATH"
+          file "$IPA_PATH"
           python3 <<'PY'
           import zipfile, os, sys
-          path = "/tmp/phub_ipa/PHUB-Player-iOS.ipa"
-          assert path.endswith(".ipa"), path
-          assert os.path.isfile(path) and os.path.getsize(path) > 1_000_000
-          with open(path, "rb") as f:
-              assert f.read(2) == b"PK", "not a zip/ipa"
-          with zipfile.ZipFile(path) as z:
-              names = z.namelist()
-          print("count", len(names))
-          print("sample", names[:12])
-          assert any(n.startswith("Payload/Runner.app/") for n in names)
+          p = "/tmp/PHUB-Player-iOS.ipa"
+          assert p.endswith(".ipa")
+          assert os.path.getsize(p) > 2_000_000
+          with open(p,"rb") as f:
+              assert f.read(2)==b"PK"
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist()
+          print("files:", len(names))
+          for n in names[:20]:
+              print(" ", n)
           assert "Payload/Runner.app/Info.plist" in names
           assert "Payload/Runner.app/Runner" in names
-          # Must NOT nest as Payload/Payload/...
           assert not any(n.startswith("Payload/Payload/") for n in names)
-          print("IPA structure OK")
+          # top-level should only be Payload/
+          tops=set(n.split("/")[0] for n in names if n)
+          assert tops=={"Payload"}, tops
+          print("IPA OK for re-sign tools")
           PY
 
-          # Copy into repo path for artifact upload
           mkdir -p build/ipa_dist
-          cp -f "$OUT" build/ipa_dist/PHUB-Player-iOS.ipa
-          ls -lh build/ipa_dist/
-          # double-check extension on disk
-          python3 -c "import os; p='build/ipa_dist/PHUB-Player-iOS.ipa'; print(p, os.path.splitext(p)[1], os.path.getsize(p))"
+          # copy with explicit .ipa name (no nested folders)
+          cp -f "$IPA_PATH" "build/ipa_dist/$IPA_NAME"
+          # also write a tiny marker so download is obvious
+          echo "PHUB-Player-iOS.ipa" > build/ipa_dist/FILENAME.txt
+          ls -la build/ipa_dist/
 
-      - name: Upload IPA artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
+          # Artifact name with .ipa helps some UIs
           name: PHUB-Player-iOS.ipa
           path: mobile/build/ipa_dist/PHUB-Player-iOS.ipa
           if-no-files-found: error

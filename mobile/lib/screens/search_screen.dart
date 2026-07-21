@@ -45,7 +45,18 @@ class _SearchScreenState extends State<SearchScreen>
 
     try {
       final api = context.read<PhubApi>();
-      final list = await api.search(q, page: page);
+      final tr = context.read<Translator>();
+      // Scheme A: Chinese keywords → English first (avoids 403 on CJK search)
+      var searchQ = q;
+      if (!nextPage && tr.containsChinese(q)) {
+        final en = await tr.zhToEn(q);
+        if (en.trim().isNotEmpty) searchQ = en.trim();
+      } else if (nextPage && tr.containsChinese(_lastQuery)) {
+        // Keep same English query used for first page
+        final en = await tr.zhToEn(_lastQuery);
+        if (en.trim().isNotEmpty) searchQ = en.trim();
+      }
+      final list = await api.search(searchQ, page: page);
       if (!mounted) return;
 
       final merged = nextPage ? [..._items, ...list] : list;
