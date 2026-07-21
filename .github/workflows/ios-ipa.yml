@@ -28,26 +28,65 @@ jobs:
 
       - name: Build iOS release (no codesign)
         working-directory: mobile
-        run: |
-          flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign
 
-      - name: Package Payload IPA
+      - name: Package standard IPA (Payload/Runner.app)
         working-directory: mobile
         run: |
-          set -e
+          set -euo pipefail
           APP_PATH="build/ios/iphoneos/Runner.app"
           test -d "$APP_PATH"
-          rm -rf build/ipa_out
-          mkdir -p build/ipa_out/Payload
-          cp -R "$APP_PATH" build/ipa_out/Payload/
-          cd build/ipa_out
-          zip -qry ../PHUB-Player-iOS-unsigned.ipa Payload
-          ls -lh ../PHUB-Player-iOS-unsigned.ipa
+          test -f "$APP_PATH/Info.plist"
+          test -f "$APP_PATH/Runner"
 
-      - name: Upload IPA artifact
+          # Standard IPA layout:
+          #   Payload/
+          #     Runner.app/
+          rm -rf build/ipa_work
+          mkdir -p build/ipa_work/Payload
+          # -R keeps symlinks inside Flutter.framework (required)
+          cp -R "$APP_PATH" build/ipa_work/Payload/Runner.app
+
+          # Zip from inside work dir so root of archive is "Payload/"
+          # -y store symlinks as symlinks (critical for Flutter.framework)
+          cd build/ipa_work
+          rm -f ../PHUB-Player-iOS.ipa
+          zip -qry -y ../PHUB-Player-iOS.ipa Payload
+
+          cd ..
+          # Force correct extension / size check
+          ls -lh PHUB-Player-iOS.ipa
+          file PHUB-Player-iOS.ipa
+
+          # Verify ZIP magic + structure
+          python3 - <<'PY'
+          import zipfile, sys
+          path = "PHUB-Player-iOS.ipa"
+          z = zipfile.ZipFile(path)
+          names = z.namelist()
+          print("entries:", len(names))
+          print("first 15:")
+          for n in names[:15]:
+              print(" ", n)
+          ok = any(n.startswith("Payload/Runner.app/") for n in names)
+          has_plist = "Payload/Runner.app/Info.plist" in names
+          has_bin = "Payload/Runner.app/Runner" in names
+          print("has Payload/Runner.app:", ok)
+          print("has Info.plist:", has_plist)
+          print("has Runner binary:", has_bin)
+          if not (ok and has_plist and has_bin):
+              sys.exit("IPA structure invalid")
+          # magic bytes PK
+          with open(path, "rb") as f:
+              magic = f.read(2)
+          assert magic == b"PK", magic
+          print("ZIP magic OK")
+          PY
+
+      - name: Upload IPA only
         uses: actions/upload-artifact@v4
         with:
-          name: PHUB-Player-iOS-unsigned
-          path: mobile/build/PHUB-Player-iOS-unsigned.ipa
+          name: PHUB-Player-iOS
+          path: mobile/build/PHUB-Player-iOS.ipa
           if-no-files-found: error
           retention-days: 14
