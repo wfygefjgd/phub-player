@@ -10,8 +10,21 @@ import '../services/phub_api.dart';
 import '../services/translator.dart';
 import '../utils/http_headers.dart';
 
+enum VideoFeedKind {
+  /// 热闹 — hot / trending mix
+  hot,
+
+  /// 亚洲 — category c=1
+  asian,
+}
+
 class VideoFeedScreen extends StatefulWidget {
-  const VideoFeedScreen({super.key});
+  const VideoFeedScreen({
+    super.key,
+    this.kind = VideoFeedKind.hot,
+  });
+
+  final VideoFeedKind kind;
 
   @override
   VideoFeedScreenState createState() => VideoFeedScreenState();
@@ -92,24 +105,65 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     _autoPlay = true;
     // Always try to kick first page when list is ready
     if (!_loading && _items.isNotEmpty) {
-      if (!_pages.containsKey(_currentIndex) ||
-          _pages[_currentIndex]?.ready != true) {
+      final cur = _pages[_currentIndex];
+      if (cur?.ready == true && cur?.controller != null) {
+        cur!.controller!.play();
+        _startProgressTimerForPage(_currentIndex);
+        WakelockPlus.enable();
+      } else if (cur?.detail != null && cur?.controller == null) {
+        // Had detail after pause/release — re-init controller only
         _loadPage(_currentIndex);
         _preloadAhead(_currentIndex);
       } else {
-        final cur = _pages[_currentIndex];
-        cur?.controller?.play();
-        WakelockPlus.enable();
+        _loadPage(_currentIndex);
+        _preloadAhead(_currentIndex);
       }
       return;
     }
-    // List still loading / empty: _loadMore will start playback when ready
+    if (_items.isEmpty && !_loadingMore) {
+      _loadMore();
+    }
+    // List still loading: _loadMore will start playback when ready
   }
 
-  void pausePlayback() {
+  /// Deactivate this feed (other tab selected). Stops play + drops players
+  /// but keeps list / detail so resume is faster.
+  void pausePlayback({bool releasePlayers = true}) {
     _feedVisible = false;
-    _pages[_currentIndex]?.controller?.pause();
+    _autoPlay = false;
+    _progressTimer?.cancel();
+    for (final p in _pages.values) {
+      p.controller?.pause();
+      if (releasePlayers) {
+        p.controller?.dispose();
+        p.controller = null;
+        p.ready = false;
+        p.loading = false;
+      }
+    }
     WakelockPlus.disable();
+  }
+
+  Future<List<VideoItem>> _fetchBatch({
+    required bool isCold,
+  }) {
+    final api = context.read<PhubApi>();
+    final limit = isCold ? 16 : 40;
+    final maxUrls = isCold ? 4 : 8;
+    switch (widget.kind) {
+      case VideoFeedKind.asian:
+        return api.fetchAsian(
+          exclude: _seen,
+          limit: limit,
+          maxUrls: maxUrls,
+        );
+      case VideoFeedKind.hot:
+        return api.fetchRecommend(
+          exclude: _seen,
+          limit: limit,
+          maxUrls: maxUrls,
+        );
+    }
   }
 
   // ---------- data loading ----------
@@ -122,20 +176,10 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     });
     final isCold = _items.isEmpty;
     try {
-      final api = context.read<PhubApi>();
-      // Cold start: small list but enough URLs so homepage parse failure still works
-      var list = await api.fetchRecommend(
-        exclude: _seen,
-        limit: isCold ? 16 : 40,
-        maxUrls: isCold ? 4 : 8,
-      );
-      // Fallback if first batch empty (homepage structure / geo / cookie)
+      var list = await _fetchBatch(isCold: isCold);
+      // Fallback if first batch empty (structure / geo / cookie)
       if (list.isEmpty && isCold) {
-        list = await api.fetchRecommend(
-          exclude: _seen,
-          limit: 24,
-          maxUrls: 10,
-        );
+        list = await _fetchBatch(isCold: false);
       }
       for (final item in list) {
         if (_seen.add(item.viewkey)) {
@@ -147,7 +191,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         _loadingMore = false;
         if (_loading) _loading = false;
         if (_items.isEmpty) {
-          _error = '视频流暂无内容，请检查网络或稍后重试';
+          final name =
+              widget.kind == VideoFeedKind.asian ? '亚洲' : '热闹';
+          _error = '$name暂无内容，请检查网络或稍后重试';
         }
       });
       // Start playback whenever feed is active and we have items
@@ -179,12 +225,17 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     if (index >= _items.length) return;
     final seq = ++_loadSeq;
     final item = _items[index];
+    if (!_autoPlay && index == _currentIndex) {
+      // Feed not active — do not start network/player work
+      return;
+    }
+
     // Already loading or ready
     final existing = _pages[index];
     if (existing != null) {
       if (existing.ready && existing.controller != null) {
         // Already buffered – just play
-        if (index == _currentIndex && _feedVisible) {
+        if (index == _currentIndex && _feedVisible && _autoPlay) {
           existing.controller!.play();
           _startProgressTimerForPage(index);
           _setCurrentInfo(index);
@@ -193,12 +244,19 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         }
         return;
       }
+      // Have detail from earlier, rebuild controller only
+      if (existing.detail != null && existing.controller == null) {
+        existing.loading = true;
+        await _initControllerForPage(index, existing, existing.detail!, seq);
+        return;
+      }
       // Still loading – wait for it in the build method
-      return;
+      if (existing.loading) return;
     }
 
     // Not started yet – create and fetch
-    final page = _PageState()..loading = true;
+    final page = existing ?? (_PageState()..loading = true);
+    page.loading = true;
     _pages[index] = page;
 
     final api = context.read<PhubApi>();
@@ -210,12 +268,31 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       if (mounted) setState(() {});
       return;
     }
+    if (!_autoPlay) {
+      page.detail = detail;
+      page.loading = false;
+      return;
+    }
     if (seq != _loadSeq && index != _currentIndex) {
       page.loading = false;
+      page.detail = detail;
       return;
     }
     page.detail = detail;
     if (!mounted) return;
+    await _initControllerForPage(index, page, detail, seq);
+  }
+
+  Future<void> _initControllerForPage(
+    int index,
+    _PageState page,
+    VideoDetail detail,
+    int seq,
+  ) async {
+    if (!_autoPlay) {
+      page.loading = false;
+      return;
+    }
 
     final stream = detail.preferredStream ?? detail.bestStream;
     if (stream == null) {
@@ -330,6 +407,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   }
 
   void _preloadAhead(int fromIndex) {
+    if (!_autoPlay || !_feedVisible) return;
     // Only next page for smoothness + lower memory
     final next = fromIndex + 1;
     if (next >= _items.length) return;
@@ -338,6 +416,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   }
 
   void _startPreload(int index) {
+    if (!_autoPlay || !_feedVisible) return;
     if (index >= _items.length || !mounted) return;
     if (_pages.containsKey(index)) return;
     final page = _PageState()..loading = true;

@@ -95,30 +95,68 @@ class PhubApi {
     return res.data!;
   }
 
-  /// Home / hot / trending style feeds (mirrors desktop recommend scrape).
-  /// [maxUrls] caps how many list pages to hit (smaller = faster first open).
+  /// Hot / trending feed ("热闹").
   Future<List<VideoItem>> fetchRecommend({
     int limit = 50,
     Set<String>? exclude,
     int maxUrls = 12,
+  }) =>
+      _fetchListFeed(
+        limit: limit,
+        exclude: exclude,
+        maxUrls: maxUrls,
+        primary: const [
+          'https://www.pornhub.com/video?o=ht',
+          'https://www.pornhub.com/video?o=mr',
+          'https://www.pornhub.com/video',
+          'https://www.pornhub.com/recommended',
+          'https://www.pornhub.com/',
+        ],
+        categoryId: null,
+      );
+
+  /// Asian category feed (`c=1`, site category "Asian").
+  Future<List<VideoItem>> fetchAsian({
+    int limit = 50,
+    Set<String>? exclude,
+    int maxUrls = 12,
+  }) =>
+      _fetchListFeed(
+        limit: limit,
+        exclude: exclude,
+        maxUrls: maxUrls,
+        primary: const [
+          'https://www.pornhub.com/video?c=1',
+          'https://www.pornhub.com/video?c=1&o=ht',
+          'https://www.pornhub.com/video?c=1&o=mr',
+          'https://www.pornhub.com/video?c=1&o=tr',
+        ],
+        categoryId: 1,
+      );
+
+  Future<List<VideoItem>> _fetchListFeed({
+    required int limit,
+    Set<String>? exclude,
+    required int maxUrls,
+    required List<String> primary,
+    int? categoryId,
   }) async {
     final rng = Random();
-    // Prefer video list pages first (homepage markup often differs / empty parse)
     final baseOrders = ['ht', 'cm', 'md', 'tr', 'vi', 'mv', 'tf', 'mr'];
-    final urls = <String>[
-      'https://www.pornhub.com/video?o=ht',
-      'https://www.pornhub.com/video?o=mr',
-      'https://www.pornhub.com/video',
-      'https://www.pornhub.com/recommended',
-      'https://www.pornhub.com/',
-    ];
+    final urls = <String>[...primary];
     for (final order in baseOrders) {
       final page = 1 + rng.nextInt(30);
-      urls.add('https://www.pornhub.com/video?o=$order&page=$page');
+      if (categoryId != null) {
+        urls.add(
+          'https://www.pornhub.com/video?c=$categoryId&o=$order&page=$page',
+        );
+      } else {
+        urls.add('https://www.pornhub.com/video?o=$order&page=$page');
+      }
     }
-    // Keep hot/recent first; shuffle the rest for variety
-    final rest = urls.sublist(2)..shuffle(rng);
-    final ordered = [urls[0], urls[1], ...rest];
+    final keep = primary.length.clamp(1, urls.length);
+    final rest = urls.sublist(keep)..shuffle(rng);
+    final ordered = [...urls.take(keep), ...rest];
 
     final seen = <String>{};
     if (exclude != null) seen.addAll(exclude);

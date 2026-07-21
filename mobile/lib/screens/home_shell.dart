@@ -18,7 +18,8 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
-  final _feedKey = GlobalKey<VideoFeedScreenState>();
+  final _hotKey = GlobalKey<VideoFeedScreenState>();
+  final _asianKey = GlobalKey<VideoFeedScreenState>();
 
   bool get _iosSlim => !kIsWeb && Platform.isIOS;
 
@@ -26,19 +27,23 @@ class _HomeShellState extends State<HomeShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _feedKey.currentState?.startPlaying();
+      _activateFeed(0);
     });
   }
 
   List<Widget> get _pages {
     if (_iosSlim) {
+      // 热闹 | 亚洲 | 搜索
       return [
-        VideoFeedScreen(key: _feedKey),
+        VideoFeedScreen(key: _hotKey, kind: VideoFeedKind.hot),
+        VideoFeedScreen(key: _asianKey, kind: VideoFeedKind.asian),
         const SearchScreen(),
       ];
     }
+    // 热闹 | 亚洲 | 推荐 | 搜索 | 下载
     return [
-      VideoFeedScreen(key: _feedKey),
+      VideoFeedScreen(key: _hotKey, kind: VideoFeedKind.hot),
+      VideoFeedScreen(key: _asianKey, kind: VideoFeedKind.asian),
       const RecommendScreen(),
       const SearchScreen(),
       const DownloadScreen(),
@@ -49,9 +54,15 @@ class _HomeShellState extends State<HomeShell> {
     if (_iosSlim) {
       return const [
         NavigationDestination(
-          icon: Icon(Icons.smart_display_outlined),
-          selectedIcon: Icon(Icons.smart_display, color: Color(0xFFFF6B35)),
-          label: '视频流',
+          icon: Icon(Icons.local_fire_department_outlined),
+          selectedIcon:
+              Icon(Icons.local_fire_department, color: Color(0xFFFF6B35)),
+          label: '热闹',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.public_outlined),
+          selectedIcon: Icon(Icons.public, color: Color(0xFFFF6B35)),
+          label: '亚洲',
         ),
         NavigationDestination(
           icon: Icon(Icons.search),
@@ -62,14 +73,19 @@ class _HomeShellState extends State<HomeShell> {
     }
     return const [
       NavigationDestination(
-        icon: Icon(Icons.smart_display_outlined),
-        selectedIcon: Icon(Icons.smart_display, color: Color(0xFFFF6B35)),
-        label: '视频流',
-      ),
-      NavigationDestination(
         icon: Icon(Icons.local_fire_department_outlined),
         selectedIcon:
             Icon(Icons.local_fire_department, color: Color(0xFFFF6B35)),
+        label: '热闹',
+      ),
+      NavigationDestination(
+        icon: Icon(Icons.public_outlined),
+        selectedIcon: Icon(Icons.public, color: Color(0xFFFF6B35)),
+        label: '亚洲',
+      ),
+      NavigationDestination(
+        icon: Icon(Icons.whatshot_outlined),
+        selectedIcon: Icon(Icons.whatshot, color: Color(0xFFFF6B35)),
         label: '推荐',
       ),
       NavigationDestination(
@@ -83,6 +99,22 @@ class _HomeShellState extends State<HomeShell> {
         label: '下载',
       ),
     ];
+  }
+
+  /// Only one vertical feed may play/preload at a time.
+  void _activateFeed(int tabIndex) {
+    final hot = _hotKey.currentState;
+    final asian = _asianKey.currentState;
+    if (tabIndex == 0) {
+      asian?.pausePlayback(releasePlayers: true);
+      hot?.startPlaying();
+    } else if (tabIndex == 1) {
+      hot?.pausePlayback(releasePlayers: true);
+      asian?.startPlaying();
+    } else {
+      hot?.pausePlayback(releasePlayers: true);
+      asian?.pausePlayback(releasePlayers: true);
+    }
   }
 
   @override
@@ -100,14 +132,8 @@ class _HomeShellState extends State<HomeShell> {
           child: NavigationBar(
             selectedIndex: idx,
             onDestinationSelected: (i) {
-              final prev = _index;
               setState(() => _index = i);
-              // Feed is always tab 0
-              if (i == 0) {
-                _feedKey.currentState?.startPlaying();
-              } else if (prev == 0) {
-                _feedKey.currentState?.pausePlayback();
-              }
+              _activateFeed(i);
             },
             backgroundColor: Colors.black.withValues(alpha: 0.28),
             surfaceTintColor: Colors.transparent,
