@@ -1,4 +1,4 @@
-name: Build iOS IPA (unsigned)
+name: Build iOS IPA
 
 on:
   workflow_dispatch:
@@ -13,80 +13,79 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Flutter pub get
+      - name: pub get
         working-directory: mobile
         run: flutter pub get
 
-      - name: Build iOS release (no codesign)
+      - name: Build iOS (unsigned)
         working-directory: mobile
         run: flutter build ios --release --no-codesign
 
-      - name: Package standard IPA (Payload/Runner.app)
+      - name: Make IPA (Payload layout + .ipa name)
         working-directory: mobile
         run: |
           set -euo pipefail
-          APP_PATH="build/ios/iphoneos/Runner.app"
-          test -d "$APP_PATH"
-          test -f "$APP_PATH/Info.plist"
-          test -f "$APP_PATH/Runner"
+          APP="build/ios/iphoneos/Runner.app"
+          test -d "$APP"
+          test -x "$APP/Runner" || test -f "$APP/Runner"
+          test -f "$APP/Info.plist"
 
-          # Standard IPA layout:
-          #   Payload/
-          #     Runner.app/
-          rm -rf build/ipa_work
-          mkdir -p build/ipa_work/Payload
-          # -R keeps symlinks inside Flutter.framework (required)
-          cp -R "$APP_PATH" build/ipa_work/Payload/Runner.app
+          # Clean workspace
+          rm -rf /tmp/phub_ipa
+          mkdir -p /tmp/phub_ipa/Payload
 
-          # Zip from inside work dir so root of archive is "Payload/"
-          # -y store symlinks as symlinks (critical for Flutter.framework)
-          cd build/ipa_work
-          rm -f ../PHUB-Player-iOS.ipa
-          zip -qry -y ../PHUB-Player-iOS.ipa Payload
+          # Copy .app into Payload/ (preserve symlinks)
+          /usr/bin/ditto "$APP" /tmp/phub_ipa/Payload/Runner.app
 
-          cd ..
-          # Force correct extension / size check
-          ls -lh PHUB-Player-iOS.ipa
-          file PHUB-Player-iOS.ipa
+          # Create IPA as a zip whose ROOT entry is "Payload/"
+          # Use absolute out path and force .ipa suffix
+          OUT="/tmp/phub_ipa/PHUB-Player-iOS.ipa"
+          rm -f "$OUT"
+          (
+            cd /tmp/phub_ipa
+            /usr/bin/zip -qry -y "$OUT" Payload
+          )
 
-          # Verify ZIP magic + structure
-          python3 - <<'PY'
-          import zipfile, sys
-          path = "PHUB-Player-iOS.ipa"
-          z = zipfile.ZipFile(path)
-          names = z.namelist()
-          print("entries:", len(names))
-          print("first 15:")
-          for n in names[:15]:
-              print(" ", n)
-          ok = any(n.startswith("Payload/Runner.app/") for n in names)
-          has_plist = "Payload/Runner.app/Info.plist" in names
-          has_bin = "Payload/Runner.app/Runner" in names
-          print("has Payload/Runner.app:", ok)
-          print("has Info.plist:", has_plist)
-          print("has Runner binary:", has_bin)
-          if not (ok and has_plist and has_bin):
-              sys.exit("IPA structure invalid")
-          # magic bytes PK
+          # Sanity checks
+          ls -lh "$OUT"
+          file "$OUT"
+          python3 <<'PY'
+          import zipfile, os, sys
+          path = "/tmp/phub_ipa/PHUB-Player-iOS.ipa"
+          assert path.endswith(".ipa"), path
+          assert os.path.isfile(path) and os.path.getsize(path) > 1_000_000
           with open(path, "rb") as f:
-              magic = f.read(2)
-          assert magic == b"PK", magic
-          print("ZIP magic OK")
+              assert f.read(2) == b"PK", "not a zip/ipa"
+          with zipfile.ZipFile(path) as z:
+              names = z.namelist()
+          print("count", len(names))
+          print("sample", names[:12])
+          assert any(n.startswith("Payload/Runner.app/") for n in names)
+          assert "Payload/Runner.app/Info.plist" in names
+          assert "Payload/Runner.app/Runner" in names
+          # Must NOT nest as Payload/Payload/...
+          assert not any(n.startswith("Payload/Payload/") for n in names)
+          print("IPA structure OK")
           PY
 
-      - name: Upload IPA only
+          # Copy into repo path for artifact upload
+          mkdir -p build/ipa_dist
+          cp -f "$OUT" build/ipa_dist/PHUB-Player-iOS.ipa
+          ls -lh build/ipa_dist/
+          # double-check extension on disk
+          python3 -c "import os; p='build/ipa_dist/PHUB-Player-iOS.ipa'; print(p, os.path.splitext(p)[1], os.path.getsize(p))"
+
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PHUB-Player-iOS
-          path: mobile/build/PHUB-Player-iOS.ipa
+          name: PHUB-Player-iOS.ipa
+          path: mobile/build/ipa_dist/PHUB-Player-iOS.ipa
           if-no-files-found: error
           retention-days: 14
