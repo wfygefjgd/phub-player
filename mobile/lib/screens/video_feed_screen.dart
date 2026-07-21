@@ -39,6 +39,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   bool _muted = false;
   bool _autoPlay = false;
   bool _feedVisible = true;
+  String? _error;
   String _titleText = '';
   String _speedLabel = '';
   Timer? _progressTimer;
@@ -88,20 +89,21 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
   void startPlaying() {
     _feedVisible = true;
-    if (!_autoPlay) {
-      _autoPlay = true;
-      if (!_loading && _items.isNotEmpty && !_pages.containsKey(0)) {
-        _loadPage(0);
-        _preloadAhead(0);
+    _autoPlay = true;
+    // Always try to kick first page when list is ready
+    if (!_loading && _items.isNotEmpty) {
+      if (!_pages.containsKey(_currentIndex) ||
+          _pages[_currentIndex]?.ready != true) {
+        _loadPage(_currentIndex);
+        _preloadAhead(_currentIndex);
+      } else {
+        final cur = _pages[_currentIndex];
+        cur?.controller?.play();
+        WakelockPlus.enable();
       }
       return;
     }
-    // Returning to feed tab: resume current if ready
-    final cur = _pages[_currentIndex];
-    if (cur?.ready == true && cur?.controller != null) {
-      cur!.controller!.play();
-      WakelockPlus.enable();
-    }
+    // List still loading / empty: _loadMore will start playback when ready
   }
 
   void pausePlayback() {
@@ -114,41 +116,59 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
   Future<void> _loadMore() async {
     if (_loadingMore) return;
-    setState(() => _loadingMore = true);
+    setState(() {
+      _loadingMore = true;
+      _error = null;
+    });
     final isCold = _items.isEmpty;
     try {
       final api = context.read<PhubApi>();
-      // Cold start: few items + few HTTP pages so first video can start ASAP
-      final list = await api.fetchRecommend(
+      // Cold start: small list but enough URLs so homepage parse failure still works
+      var list = await api.fetchRecommend(
         exclude: _seen,
-        limit: isCold ? 12 : 40,
-        maxUrls: isCold ? 1 : 6,
+        limit: isCold ? 16 : 40,
+        maxUrls: isCold ? 4 : 8,
       );
+      // Fallback if first batch empty (homepage structure / geo / cookie)
+      if (list.isEmpty && isCold) {
+        list = await api.fetchRecommend(
+          exclude: _seen,
+          limit: 24,
+          maxUrls: 10,
+        );
+      }
       for (final item in list) {
         if (_seen.add(item.viewkey)) {
           _items.add(item);
         }
       }
       if (!mounted) return;
-      setState(() => _loadingMore = false);
-      if (_loading) {
-        setState(() => _loading = false);
-        if (_autoPlay && _items.isNotEmpty) {
-          // Start first video immediately; more items load in background
-          _loadPage(0);
-          _preloadAhead(0);
+      setState(() {
+        _loadingMore = false;
+        if (_loading) _loading = false;
+        if (_items.isEmpty) {
+          _error = '视频流暂无内容，请检查网络或稍后重试';
+        }
+      });
+      // Start playback whenever feed is active and we have items
+      if (_autoPlay && _items.isNotEmpty) {
+        final needStart = !_pages.containsKey(_currentIndex) ||
+            _pages[_currentIndex]?.ready != true;
+        if (needStart) {
+          _loadPage(_currentIndex.clamp(0, _items.length - 1));
+        }
+        _preloadAhead(_currentIndex);
+        // Background fill after cold start
+        if (isCold && _items.length < 30) {
           Future.microtask(() => _loadMore());
         }
       }
-      // Preload newly-arrived upcoming pages if current is active
-      if (_autoPlay && _pages.containsKey(_currentIndex)) {
-        _preloadAhead(_currentIndex);
-      }
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
         _loadingMore = false;
+        if (_items.isEmpty) _error = e.toString();
       });
     }
   }
@@ -481,6 +501,41 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         backgroundColor: Colors.black,
         body: Center(
           child: CircularProgressIndicator(color: Color(0xFFFF6B35)),
+        ),
+      );
+    }
+    if (_items.isEmpty) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _error ?? '视频流为空',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF6B35),
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _loading = true;
+                      _error = null;
+                    });
+                    _autoPlay = true;
+                    _loadMore();
+                  },
+                  child: const Text('重新加载'),
+                ),
+              ],
+            ),
+          ),
         ),
       );
     }

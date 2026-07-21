@@ -103,19 +103,22 @@ class PhubApi {
     int maxUrls = 12,
   }) async {
     final rng = Random();
-    // B) pages 1-30  C) recommended  D) o=mr (most-recent, always fresh)
+    // Prefer video list pages first (homepage markup often differs / empty parse)
     final baseOrders = ['ht', 'cm', 'md', 'tr', 'vi', 'mv', 'tf', 'mr'];
-    final urls = <String>[];
-    // Homepage first for cold start speed
-    urls.add('https://www.pornhub.com/');
-    urls.add('https://www.pornhub.com/recommended');
+    final urls = <String>[
+      'https://www.pornhub.com/video?o=ht',
+      'https://www.pornhub.com/video?o=mr',
+      'https://www.pornhub.com/video',
+      'https://www.pornhub.com/recommended',
+      'https://www.pornhub.com/',
+    ];
     for (final order in baseOrders) {
       final page = 1 + rng.nextInt(30);
       urls.add('https://www.pornhub.com/video?o=$order&page=$page');
     }
-    // Keep homepage first; shuffle the rest
-    final rest = urls.sublist(1)..shuffle(rng);
-    final ordered = [urls.first, ...rest];
+    // Keep hot/recent first; shuffle the rest for variety
+    final rest = urls.sublist(2)..shuffle(rng);
+    final ordered = [urls[0], urls[1], ...rest];
 
     final seen = <String>{};
     if (exclude != null) seen.addAll(exclude);
