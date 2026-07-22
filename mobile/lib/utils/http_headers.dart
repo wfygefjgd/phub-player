@@ -7,4 +7,25 @@ class AppHttpHeaders {
     'Referer': 'https://www.pornhub.com/',
     'Origin': 'https://www.pornhub.com',
   };
+
+  /// Thumb / stream headers by media URL host.
+  static Map<String, String> forMediaUrl(String? url) {
+    final u = (url ?? '').toLowerCase();
+    if (u.contains('xvideos') || u.contains('xvideos-cdn') || u.contains('xnxx')) {
+      return {
+        ...browser,
+        'Referer': 'https://www.xvideos.com/',
+        'Origin': 'https://www.xvideos.com',
+      };
+    }
+    if (u.contains('mitao') || u.contains('mitaohk')) {
+      return {
+        ...browser,
+        'Referer': 'https://mitaohk.com/',
+        'Origin': 'https://mitaohk.com',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      };
+    }
+    return browser;
+  }
 }

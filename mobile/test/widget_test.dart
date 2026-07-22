@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:phub_player/main.dart';
+import 'package:phub_player/services/app_settings.dart';
 
 void main() {
   testWidgets('App renders smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(const PhubApp());
+    final settings = AppSettings();
+    await tester.pumpWidget(PhubApp(settings: settings));
     await tester.pump();
 
-    // Verify app shell renders
     expect(find.byType(NavigationBar), findsOneWidget);
   });
 }

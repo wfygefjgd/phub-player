@@ -3,19 +3,24 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/home_shell.dart';
+import 'services/app_settings.dart';
+import 'services/mitao_api.dart';
 import 'services/phub_api.dart';
 import 'services/translator.dart';
-import 'services/mitao_api.dart';
 import 'services/xvideos_api.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  runApp(const PhubApp());
+  final settings = AppSettings();
+  await settings.load();
+  runApp(PhubApp(settings: settings));
 }
 
 class PhubApp extends StatelessWidget {
-  const PhubApp({super.key});
+  const PhubApp({super.key, required this.settings});
+
+  final AppSettings settings;
 
   @override
   Widget build(BuildContext context) {
@@ -25,6 +30,7 @@ class PhubApp extends StatelessWidget {
         Provider(create: (_) => XvideosApi()),
         Provider(create: (_) => MitaoApi()),
         Provider(create: (_) => Translator()),
+        ChangeNotifierProvider.value(value: settings),
       ],
       child: MaterialApp(
         title: 'PHUB Player',

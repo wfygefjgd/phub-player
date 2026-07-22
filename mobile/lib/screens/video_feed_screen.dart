@@ -10,6 +10,7 @@ import '../services/mitao_api.dart';
 import '../services/phub_api.dart';
 import '../services/translator.dart';
 import '../services/xvideos_api.dart';
+import '../services/app_settings.dart';
 import '../utils/http_headers.dart';
 import '../utils/playback_helpers.dart';
 
@@ -268,6 +269,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _failStreak = 0;
       return;
     }
+    if (mounted) PlaybackHelpers.toast(context, '已跳过无法播放的视频');
     final next = fromIndex + 1;
     Future<void>.delayed(const Duration(milliseconds: 400), () {
       if (!mounted || !_active) return;
@@ -365,7 +367,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
     _failStreak = 0;
     ctrl.setVolume(_muted ? 0 : 1);
-    await PlaybackHelpers.skipIntro(ctrl);
+    final skip = context.read<AppSettings>().skipIntro;
+    await PlaybackHelpers.skipIntro(ctrl, enabled: skip);
     if (!mounted || seq != _loadSeq || !_active) {
       await ctrl.dispose();
       return;
@@ -586,6 +589,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                           thumb,
                           fit: BoxFit.cover,
                           gaplessPlayback: true,
+                          headers: AppHttpHeaders.forMediaUrl(thumb),
                           errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                         ),
                       if (i == _currentIndex && _pageLoading)
