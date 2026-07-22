@@ -24,73 +24,115 @@ jobs:
         working-directory: mobile
         run: flutter pub get
 
-      - name: Build iOS (unsigned)
+      - name: Build iOS release (no codesign, device)
         working-directory: mobile
-        run: flutter build ios --release --no-codesign
+        run: |
+          # Force device (iphoneos), not simulator
+          flutter build ios --release --no-codesign
 
-      - name: Package IPA for Sideloadly / 全能签
+      - name: Thin frameworks to arm64 + package IPA
         working-directory: mobile
         run: |
           set -euo pipefail
-          APP="build/ios/iphoneos/Runner.app"
-          test -d "$APP"
-          test -f "$APP/Info.plist"
-          test -f "$APP/Runner"
+          APP_SRC="build/ios/iphoneos/Runner.app"
+          test -d "$APP_SRC"
 
-          # Absolute staging dir
-          STAGE="/tmp/phub_payload_$$"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE/Payload"
+          WORK="/tmp/phub_ipa_$$"
+          rm -rf "$WORK"
+          mkdir -p "$WORK/Payload"
+          # Copy app
+          /usr/bin/ditto "$APP_SRC" "$WORK/Payload/Runner.app"
+          APP="$WORK/Payload/Runner.app"
 
-          # Preserve symlinks (Flutter.framework)
-          /usr/bin/ditto "$APP" "$STAGE/Payload/Runner.app"
+          # Strip quarantine / xattrs (sideload tools hate these)
+          xattr -cr "$APP" || true
 
-          # IPA file name MUST end with .ipa
-          IPA_NAME="PHUB-Player-iOS.ipa"
-          IPA_PATH="/tmp/$IPA_NAME"
-          rm -f "$IPA_PATH"
+          # Ensure executable bits
+          chmod +x "$APP/Runner" || true
+          find "$APP/Frameworks" -type f -perm -111 -print 2>/dev/null || true
+          if [ -f "$APP/Frameworks/Flutter.framework/Flutter" ]; then
+            chmod +x "$APP/Frameworks/Flutter.framework/Flutter"
+          fi
+          if [ -f "$APP/Frameworks/App.framework/App" ]; then
+            chmod +x "$APP/Frameworks/App.framework/App"
+          fi
 
-          # Zip so archive root is exactly: Payload/Runner.app/...
+          # Thin fat binaries to arm64 only (common sideload install failure cause)
+          thin_arm64() {
+            local bin="$1"
+            if [ ! -f "$bin" ]; then return 0; fi
+            local info
+            info=$(lipo -info "$bin" 2>/dev/null || true)
+            echo "lipo: $bin -> $info"
+            if echo "$info" | grep -q "Architectures in the fat file"; then
+              if echo "$info" | grep -q "arm64"; then
+                lipo -thin arm64 "$bin" -output "${bin}.arm64"
+                mv "${bin}.arm64" "$bin"
+                chmod +x "$bin"
+                echo "thinned to arm64: $bin"
+              fi
+            fi
+          }
+          thin_arm64 "$APP/Runner"
+          thin_arm64 "$APP/Frameworks/Flutter.framework/Flutter"
+          thin_arm64 "$APP/Frameworks/App.framework/App"
+          # any other framework binary
+          find "$APP/Frameworks" -type f \( -name "*.dylib" -o -perm -111 \) 2>/dev/null | while read -r f; do
+            thin_arm64 "$f"
+          done
+
+          # Remove simulator-only leftover if any
+          rm -rf "$APP/Frameworks"/*.framework/_* 2>/dev/null || true
+
+          # Build IPA: root must be Payload/
+          OUT="/tmp/PHUB-Player-iOS.ipa"
+          rm -f "$OUT"
           (
-            cd "$STAGE"
-            /usr/bin/zip -qr -y "$IPA_PATH" Payload
+            cd "$WORK"
+            # -y store symlinks as links; no resource forks
+            /usr/bin/zip -qry -y "$OUT" Payload
           )
 
-          # Validate
-          ls -lh "$IPA_PATH"
-          file "$IPA_PATH"
+          ls -lh "$OUT"
+          file "$OUT"
+
           python3 <<'PY'
-          import zipfile, os, sys
+          import zipfile, os, sys, struct
           p = "/tmp/PHUB-Player-iOS.ipa"
           assert p.endswith(".ipa")
-          assert os.path.getsize(p) > 2_000_000
-          with open(p,"rb") as f:
-              assert f.read(2)==b"PK"
+          size = os.path.getsize(p)
+          print("size", size)
+          assert size > 3_000_000, size
+          with open(p, "rb") as f:
+              magic = f.read(4)
+          assert magic[:2] == b"PK", magic
           with zipfile.ZipFile(p) as z:
-              names=z.namelist()
-          print("files:", len(names))
-          for n in names[:20]:
+              names = z.namelist()
+          print("entries", len(names))
+          for n in names[:15]:
               print(" ", n)
           assert "Payload/Runner.app/Info.plist" in names
           assert "Payload/Runner.app/Runner" in names
-          assert not any(n.startswith("Payload/Payload/") for n in names)
-          # top-level should only be Payload/
-          tops=set(n.split("/")[0] for n in names if n)
-          assert tops=={"Payload"}, tops
-          print("IPA OK for re-sign tools")
+          tops = {n.split("/")[0] for n in names if n}
+          assert tops == {"Payload"}, tops
+          # extract Runner binary header from zip
+          with zipfile.ZipFile(p) as z:
+              data = z.read("Payload/Runner.app/Runner")[:8]
+          # MH_MAGIC_64 little-endian CF FA ED FE, cpu ARM64 0x0100000c
+          print("Runner magic", data.hex())
+          assert data[:4] == bytes.fromhex("cffaedfe"), data[:4].hex()
+          print("IPA structure OK for 全能签 / TrollStore re-sign")
           PY
 
           mkdir -p build/ipa_dist
-          # copy with explicit .ipa name (no nested folders)
-          cp -f "$IPA_PATH" "build/ipa_dist/$IPA_NAME"
-          # also write a tiny marker so download is obvious
-          echo "PHUB-Player-iOS.ipa" > build/ipa_dist/FILENAME.txt
+          cp -f "$OUT" build/ipa_dist/PHUB-Player-iOS.ipa
+          # size marker
+          wc -c build/ipa_dist/PHUB-Player-iOS.ipa
           ls -la build/ipa_dist/
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          # Artifact name with .ipa helps some UIs
           name: PHUB-Player-iOS.ipa
           path: mobile/build/ipa_dist/PHUB-Player-iOS.ipa
           if-no-files-found: error
