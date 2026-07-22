@@ -115,24 +115,27 @@ class PhubApi {
         categoryId: null,
       );
 
-  /// Asian category feed (`c=1`, site category "Asian").
+  /// Asian category feed (`c=1`). Fully shuffled like 热闹 (random order + pages).
   Future<List<VideoItem>> fetchAsian({
     int limit = 50,
     Set<String>? exclude,
     int maxUrls = 12,
-  }) =>
-      _fetchListFeed(
-        limit: limit,
-        exclude: exclude,
-        maxUrls: maxUrls,
-        primary: const [
-          'https://www.pornhub.com/video?c=1',
-          'https://www.pornhub.com/video?c=1&o=ht',
-          'https://www.pornhub.com/video?c=1&o=mr',
-          'https://www.pornhub.com/video?c=1&o=tr',
-        ],
-        categoryId: 1,
-      );
+  }) {
+    final rng = Random();
+    final primary = <String>[
+      for (final o in ['ht', 'mr', 'tr', 'cm', 'vi', 'mv'])
+        'https://www.pornhub.com/video?c=1&o=$o&page=${1 + rng.nextInt(25)}',
+      'https://www.pornhub.com/video?c=1&page=${1 + rng.nextInt(20)}',
+    ];
+    return _fetchListFeed(
+      limit: limit,
+      exclude: exclude,
+      maxUrls: maxUrls,
+      primary: primary,
+      categoryId: 1,
+      shuffleAll: true,
+    );
+  }
 
   Future<List<VideoItem>> _fetchListFeed({
     required int limit,
@@ -140,6 +143,7 @@ class PhubApi {
     required int maxUrls,
     required List<String> primary,
     int? categoryId,
+    bool shuffleAll = false,
   }) async {
     final rng = Random();
     final baseOrders = ['ht', 'cm', 'md', 'tr', 'vi', 'mv', 'tf', 'mr'];
@@ -154,9 +158,14 @@ class PhubApi {
         urls.add('https://www.pornhub.com/video?o=$order&page=$page');
       }
     }
-    final keep = primary.length.clamp(1, urls.length);
-    final rest = urls.sublist(keep)..shuffle(rng);
-    final ordered = [...urls.take(keep), ...rest];
+    final List<String> ordered;
+    if (shuffleAll) {
+      ordered = [...urls]..shuffle(rng);
+    } else {
+      final keep = primary.length.clamp(1, urls.length);
+      final rest = urls.sublist(keep)..shuffle(rng);
+      ordered = [...urls.take(keep), ...rest];
+    }
 
     final seen = <String>{};
     if (exclude != null) seen.addAll(exclude);

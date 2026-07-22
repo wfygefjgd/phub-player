@@ -13,7 +13,11 @@ class VideoItem {
 
   String get viewkey {
     final m = RegExp(r'viewkey=([^&#]+)').firstMatch(url);
-    return m?.group(1) ?? url;
+    if (m != null) return m.group(1)!;
+    // XVideos: /video.xxxxx/slug
+    final x = RegExp(r'/video\.([a-zA-Z0-9]+)').firstMatch(url);
+    if (x != null) return x.group(1)!;
+    return url;
   }
 
   VideoItem copyWith({

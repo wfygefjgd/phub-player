@@ -20,6 +20,7 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   final _hotKey = GlobalKey<VideoFeedScreenState>();
   final _asianKey = GlobalKey<VideoFeedScreenState>();
+  final _xKey = GlobalKey<VideoFeedScreenState>();
 
   bool get _iosSlim => !kIsWeb && Platform.isIOS;
 
@@ -33,17 +34,19 @@ class _HomeShellState extends State<HomeShell> {
 
   List<Widget> get _pages {
     if (_iosSlim) {
-      // 热闹 | 亚洲 | 搜索
+      // 热闹 | 亚洲 | X | 搜索
       return [
         VideoFeedScreen(key: _hotKey, kind: VideoFeedKind.hot),
         VideoFeedScreen(key: _asianKey, kind: VideoFeedKind.asian),
+        VideoFeedScreen(key: _xKey, kind: VideoFeedKind.x),
         const SearchScreen(),
       ];
     }
-    // 热闹 | 亚洲 | 推荐 | 搜索 | 下载
+    // 热闹 | 亚洲 | X | 推荐 | 搜索 | 下载
     return [
       VideoFeedScreen(key: _hotKey, kind: VideoFeedKind.hot),
       VideoFeedScreen(key: _asianKey, kind: VideoFeedKind.asian),
+      VideoFeedScreen(key: _xKey, kind: VideoFeedKind.x),
       const RecommendScreen(),
       const SearchScreen(),
       const DownloadScreen(),
@@ -65,6 +68,11 @@ class _HomeShellState extends State<HomeShell> {
           label: '亚洲',
         ),
         NavigationDestination(
+          icon: Icon(Icons.play_circle_outline),
+          selectedIcon: Icon(Icons.play_circle, color: Color(0xFFFF6B35)),
+          label: 'X',
+        ),
+        NavigationDestination(
           icon: Icon(Icons.search),
           selectedIcon: Icon(Icons.search, color: Color(0xFFFF6B35)),
           label: '搜索',
@@ -82,6 +90,11 @@ class _HomeShellState extends State<HomeShell> {
         icon: Icon(Icons.public_outlined),
         selectedIcon: Icon(Icons.public, color: Color(0xFFFF6B35)),
         label: '亚洲',
+      ),
+      NavigationDestination(
+        icon: Icon(Icons.play_circle_outline),
+        selectedIcon: Icon(Icons.play_circle, color: Color(0xFFFF6B35)),
+        label: 'X',
       ),
       NavigationDestination(
         icon: Icon(Icons.whatshot_outlined),
@@ -105,15 +118,14 @@ class _HomeShellState extends State<HomeShell> {
   void _activateFeed(int tabIndex) {
     final hot = _hotKey.currentState;
     final asian = _asianKey.currentState;
-    if (tabIndex == 0) {
-      asian?.pausePlayback(releasePlayers: true);
-      hot?.startPlaying();
-    } else if (tabIndex == 1) {
-      hot?.pausePlayback(releasePlayers: true);
-      asian?.startPlaying();
-    } else {
-      hot?.pausePlayback(releasePlayers: true);
-      asian?.pausePlayback(releasePlayers: true);
+    final x = _xKey.currentState;
+    final feeds = [hot, asian, x];
+    for (var i = 0; i < feeds.length; i++) {
+      if (i == tabIndex) {
+        feeds[i]?.startPlaying();
+      } else {
+        feeds[i]?.pausePlayback(releasePlayers: true);
+      }
     }
   }
 
@@ -133,7 +145,14 @@ class _HomeShellState extends State<HomeShell> {
             selectedIndex: idx,
             onDestinationSelected: (i) {
               setState(() => _index = i);
-              _activateFeed(i);
+              // Feed tabs are 0=热闹, 1=亚洲, 2=X; others pause all feeds
+              if (i <= 2) {
+                _activateFeed(i);
+              } else {
+                _hotKey.currentState?.pausePlayback(releasePlayers: true);
+                _asianKey.currentState?.pausePlayback(releasePlayers: true);
+                _xKey.currentState?.pausePlayback(releasePlayers: true);
+              }
             },
             backgroundColor: Colors.black.withValues(alpha: 0.28),
             surfaceTintColor: Colors.transparent,

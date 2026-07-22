@@ -9,6 +9,7 @@ import 'screens/home_shell.dart';
 import 'services/download_service.dart';
 import 'services/phub_api.dart';
 import 'services/translator.dart';
+import 'services/xvideos_api.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,7 @@ class PhubApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         Provider(create: (_) => PhubApi()),
+        Provider(create: (_) => XvideosApi()),
         Provider(create: (_) => Translator()),
         // Downloads only on Android (iOS build strips download UI)
         if (!ios) ChangeNotifierProvider(create: (_) => DownloadService()),

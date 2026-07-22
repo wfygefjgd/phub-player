@@ -8,6 +8,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/video_item.dart';
 import '../services/phub_api.dart';
 import '../services/translator.dart';
+import '../services/xvideos_api.dart';
 import '../utils/http_headers.dart';
 
 enum VideoFeedKind {
@@ -16,6 +17,9 @@ enum VideoFeedKind {
 
   /// 亚洲 — category c=1
   asian,
+
+  /// X — XVideos random mix
+  x,
 }
 
 class VideoFeedScreen extends StatefulWidget {
@@ -39,7 +43,16 @@ class _PageState {
 
 class VideoFeedScreenState extends State<VideoFeedScreen>
     with WidgetsBindingObserver {
-  static const _httpHeaders = AppHttpHeaders.browser;
+  Map<String, String> get _httpHeaders {
+    if (widget.kind == VideoFeedKind.x) {
+      return {
+        ...AppHttpHeaders.browser,
+        'Referer': 'https://www.xvideos.com/',
+        'Origin': 'https://www.xvideos.com',
+      };
+    }
+    return AppHttpHeaders.browser;
+  }
 
   final List<VideoItem> _items = [];
   final Set<String> _seen = {};
@@ -147,23 +160,46 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   Future<List<VideoItem>> _fetchBatch({
     required bool isCold,
   }) {
-    final api = context.read<PhubApi>();
     final limit = isCold ? 16 : 40;
     final maxUrls = isCold ? 4 : 8;
     switch (widget.kind) {
       case VideoFeedKind.asian:
-        return api.fetchAsian(
-          exclude: _seen,
-          limit: limit,
-          maxUrls: maxUrls,
-        );
+        return context.read<PhubApi>().fetchAsian(
+              exclude: _seen,
+              limit: limit,
+              maxUrls: maxUrls,
+            );
       case VideoFeedKind.hot:
-        return api.fetchRecommend(
-          exclude: _seen,
-          limit: limit,
-          maxUrls: maxUrls,
-        );
+        return context.read<PhubApi>().fetchRecommend(
+              exclude: _seen,
+              limit: limit,
+              maxUrls: maxUrls,
+            );
+      case VideoFeedKind.x:
+        return context.read<XvideosApi>().fetchFeed(
+              exclude: _seen,
+              limit: limit,
+              maxUrls: maxUrls,
+            );
     }
+  }
+
+  String get _feedLabel {
+    switch (widget.kind) {
+      case VideoFeedKind.asian:
+        return '亚洲';
+      case VideoFeedKind.x:
+        return 'X';
+      case VideoFeedKind.hot:
+        return '热闹';
+    }
+  }
+
+  Future<VideoDetail> _fetchDetail(String url) {
+    if (url.contains('xvideos.com') || widget.kind == VideoFeedKind.x) {
+      return context.read<XvideosApi>().getVideoDetail(url);
+    }
+    return context.read<PhubApi>().getVideoDetail(url);
   }
 
   // ---------- data loading ----------
@@ -191,9 +227,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         _loadingMore = false;
         if (_loading) _loading = false;
         if (_items.isEmpty) {
-          final name =
-              widget.kind == VideoFeedKind.asian ? '亚洲' : '热闹';
-          _error = '$name暂无内容，请检查网络或稍后重试';
+          _error = '$_feedLabel暂无内容，请检查网络或稍后重试';
         }
       });
       // Start playback whenever feed is active and we have items
@@ -259,10 +293,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     page.loading = true;
     _pages[index] = page;
 
-    final api = context.read<PhubApi>();
     VideoDetail detail;
     try {
-      detail = await api.getVideoDetail(item.url);
+      detail = await _fetchDetail(item.url);
     } catch (_) {
       page.loading = false;
       if (mounted) setState(() {});
@@ -421,9 +454,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     if (_pages.containsKey(index)) return;
     final page = _PageState()..loading = true;
     _pages[index] = page;
-    final api = context.read<PhubApi>();
     final url = _items[index].url;
-    api.getVideoDetail(url).then((detail) {
+    _fetchDetail(url).then((detail) {
       if (!mounted || !_pages.containsKey(index)) {
         page.loading = false;
         return;
