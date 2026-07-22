@@ -62,7 +62,7 @@ class _HomeShellState extends State<HomeShell> {
               NavigationDestination(
                 icon: Icon(Icons.search),
                 selectedIcon: Icon(Icons.search, color: Color(0xFFFF6B35)),
-                label: '搜索',
+                label: '搜',
               ),
             ],
           ),

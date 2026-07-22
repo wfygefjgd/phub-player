@@ -11,6 +11,7 @@ import '../services/phub_api.dart';
 import '../services/translator.dart';
 import '../services/xvideos_api.dart';
 import '../utils/http_headers.dart';
+import '../utils/playback_helpers.dart';
 
 enum VideoFeedKind {
   hot,
@@ -64,6 +65,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   int _lastTickMs = 0;
   double _lastPosMs = 0;
   String _lastSpeedLabel = '';
+  int _failStreak = 0;
+  final Map<int, VideoDetail> _detailCache = {};
+  int? _prefetchingIndex;
 
   Map<String, String> get _httpHeaders {
     switch (widget.kind) {
@@ -258,6 +262,42 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     }
   }
 
+  void _scheduleSkipToNext(int fromIndex) {
+    _failStreak++;
+    if (_failStreak > 8 || !_active) {
+      _failStreak = 0;
+      return;
+    }
+    final next = fromIndex + 1;
+    Future<void>.delayed(const Duration(milliseconds: 400), () {
+      if (!mounted || !_active) return;
+      if (next < _items.length) {
+        if (_pageCtrl.hasClients) {
+          _pageCtrl.jumpToPage(next);
+        } else {
+          _playIndex(next);
+        }
+      } else {
+        _loadMore();
+      }
+    });
+  }
+
+  void _prefetchDetail(int index) {
+    if (!_active || index < 0 || index >= _items.length) return;
+    if (_detailCache.containsKey(index)) return;
+    if (_prefetchingIndex == index) return;
+    _prefetchingIndex = index;
+    final url = _items[index].url;
+    _fetchDetail(url).then((d) {
+      if (!mounted || !_active) return;
+      _detailCache[index] = d;
+      _detailCache.removeWhere((k, _) => (k - _currentIndex).abs() > 2);
+    }).catchError((_) {}).whenComplete(() {
+      if (_prefetchingIndex == index) _prefetchingIndex = null;
+    });
+  }
+
   Future<void> _playIndex(int index) async {
     if (!_active || index < 0 || index >= _items.length) return;
     final seq = ++_loadSeq;
@@ -279,10 +319,16 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
     VideoDetail detail;
     try {
-      detail = await _fetchDetail(item.url);
+      if (_detailCache.containsKey(index)) {
+        detail = _detailCache[index]!;
+      } else {
+        detail = await _fetchDetail(item.url);
+        _detailCache[index] = detail;
+      }
     } catch (_) {
       if (!mounted || seq != _loadSeq) return;
       setState(() => _pageLoading = false);
+      _scheduleSkipToNext(index);
       return;
     }
     if (!mounted || seq != _loadSeq || !_active) return;
@@ -291,6 +337,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     final stream = detail.preferredStream ?? detail.bestStream;
     if (stream == null) {
       setState(() => _pageLoading = false);
+      _scheduleSkipToNext(index);
       return;
     }
 
@@ -307,6 +354,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       await ctrl.dispose();
       if (mounted && seq == _loadSeq) {
         setState(() => _pageLoading = false);
+        _scheduleSkipToNext(index);
       }
       return;
     }
@@ -315,7 +363,13 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       return;
     }
 
+    _failStreak = 0;
     ctrl.setVolume(_muted ? 0 : 1);
+    await PlaybackHelpers.skipIntro(ctrl);
+    if (!mounted || seq != _loadSeq || !_active) {
+      await ctrl.dispose();
+      return;
+    }
     _controller = ctrl;
     setState(() {
       _pageLoading = false;
@@ -327,6 +381,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     _startProgressTimer();
     WakelockPlus.enable();
     if (mounted) setState(() {});
+    _prefetchDetail(index + 1);
   }
 
   Future<void> _disposeController() async {

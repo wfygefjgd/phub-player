@@ -10,12 +10,13 @@ import '../services/mitao_api.dart';
 import '../services/phub_api.dart';
 import '../services/xvideos_api.dart';
 import '../utils/http_headers.dart';
+import '../utils/playback_helpers.dart';
 
 /// Which backend to use for detail / headers.
 enum SearchSource { ph, x, zhong }
 
-/// Vertical swipe player for a fixed search-result list.
-/// Single ExoPlayer/AVPlayer instance; preloads **next video detail** only.
+/// Vertical swipe player for search results.
+/// Single player; preloads next detail; can append pages via [onLoadMore].
 class SearchFeedScreen extends StatefulWidget {
   const SearchFeedScreen({
     super.key,
@@ -23,12 +24,15 @@ class SearchFeedScreen extends StatefulWidget {
     required this.source,
     this.initialIndex = 0,
     this.title = '播放',
+    this.onLoadMore,
   });
 
   final List<VideoItem> items;
   final SearchSource source;
   final int initialIndex;
   final String title;
+  /// Returns newly appended items (may be empty when no more).
+  final Future<List<VideoItem>> Function()? onLoadMore;
 
   @override
   State<SearchFeedScreen> createState() => _SearchFeedScreenState();
@@ -37,11 +41,14 @@ class SearchFeedScreen extends StatefulWidget {
 class _SearchFeedScreenState extends State<SearchFeedScreen>
     with WidgetsBindingObserver {
   late final PageController _pageCtrl;
+  late final List<VideoItem> _items;
   late int _index;
   int _seq = 0;
+  int _failStreak = 0;
 
   VideoPlayerController? _controller;
   bool _pageLoading = false;
+  bool _loadingMore = false;
   bool _muted = false;
   String _titleText = '';
   String _totalTime = '0:00';
@@ -49,7 +56,6 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   final ValueNotifier<double> _slider = ValueNotifier(0);
   final ValueNotifier<String> _curTime = ValueNotifier('0:00');
 
-  /// Pre-fetched next detail for seamless switch
   final Map<int, VideoDetail> _detailCache = {};
   int? _prefetchingIndex;
 
@@ -77,9 +83,10 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _index = widget.initialIndex.clamp(0, widget.items.length - 1);
+    _items = List<VideoItem>.from(widget.items);
+    _index = widget.initialIndex.clamp(0, _items.length - 1);
     _pageCtrl = PageController(initialPage: _index);
-    _titleText = widget.items[_index].title;
+    _titleText = _items[_index].title;
     WidgetsBinding.instance.addPostFrameCallback((_) => _playIndex(_index));
   }
 
@@ -122,10 +129,54 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     }
   }
 
+  Future<void> _ensureMoreIfNearEnd(int page) async {
+    if (widget.onLoadMore == null) return;
+    if (_loadingMore) return;
+    if (page < _items.length - 3) return;
+    _loadingMore = true;
+    try {
+      final extra = await widget.onLoadMore!();
+      if (!mounted || extra.isEmpty) return;
+      final seen = <String>{for (final e in _items) e.viewkey};
+      final add = <VideoItem>[];
+      for (final e in extra) {
+        if (seen.add(e.viewkey)) add.add(e);
+      }
+      if (add.isEmpty) return;
+      setState(() => _items.addAll(add));
+    } catch (_) {
+    } finally {
+      _loadingMore = false;
+    }
+  }
+
+  void _scheduleSkipToNext(int fromIndex) {
+    _failStreak++;
+    if (_failStreak > 8) {
+      _failStreak = 0;
+      return;
+    }
+    final next = fromIndex + 1;
+    Future<void>.delayed(const Duration(milliseconds: 400), () async {
+      if (!mounted) return;
+      if (next >= _items.length) {
+        await _ensureMoreIfNearEnd(_items.length - 1);
+      }
+      if (!mounted) return;
+      if (next < _items.length) {
+        if (_pageCtrl.hasClients) {
+          _pageCtrl.jumpToPage(next);
+        } else {
+          _playIndex(next);
+        }
+      }
+    });
+  }
+
   Future<void> _playIndex(int index) async {
-    if (index < 0 || index >= widget.items.length) return;
+    if (index < 0 || index >= _items.length) return;
     final seq = ++_seq;
-    final item = widget.items[index];
+    final item = _items[index];
 
     await _disposePlayer();
     if (!mounted || seq != _seq) return;
@@ -139,6 +190,10 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     _slider.value = 0;
     _curTime.value = '0:00';
 
+    // Fire load-more early so swipe never dead-ends
+    // ignore: unawaited_futures
+    _ensureMoreIfNearEnd(index);
+
     VideoDetail detail;
     try {
       if (_detailCache.containsKey(index)) {
@@ -148,7 +203,10 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
         _detailCache[index] = detail;
       }
     } catch (_) {
-      if (mounted && seq == _seq) setState(() => _pageLoading = false);
+      if (mounted && seq == _seq) {
+        setState(() => _pageLoading = false);
+        _scheduleSkipToNext(index);
+      }
       return;
     }
     if (!mounted || seq != _seq) return;
@@ -156,6 +214,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     final stream = detail.preferredStream ?? detail.bestStream;
     if (stream == null) {
       setState(() => _pageLoading = false);
+      _scheduleSkipToNext(index);
       return;
     }
 
@@ -168,7 +227,10 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       await ctrl.initialize();
     } catch (_) {
       await ctrl.dispose();
-      if (mounted && seq == _seq) setState(() => _pageLoading = false);
+      if (mounted && seq == _seq) {
+        setState(() => _pageLoading = false);
+        _scheduleSkipToNext(index);
+      }
       return;
     }
     if (!mounted || seq != _seq) {
@@ -176,7 +238,13 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       return;
     }
 
+    _failStreak = 0;
     ctrl.setVolume(_muted ? 0 : 1);
+    await PlaybackHelpers.skipIntro(ctrl);
+    if (!mounted || seq != _seq) {
+      await ctrl.dispose();
+      return;
+    }
     _controller = ctrl;
     setState(() {
       _pageLoading = false;
@@ -188,20 +256,18 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     WakelockPlus.enable();
     if (mounted) setState(() {});
 
-    // Smart preload: next item **detail only** (not a second player)
     _prefetchDetail(index + 1);
   }
 
   void _prefetchDetail(int index) {
-    if (index < 0 || index >= widget.items.length) return;
+    if (index < 0 || index >= _items.length) return;
     if (_detailCache.containsKey(index)) return;
     if (_prefetchingIndex == index) return;
     _prefetchingIndex = index;
-    final url = widget.items[index].url;
+    final url = _items[index].url;
     _fetchDetail(url).then((d) {
       if (!mounted) return;
       _detailCache[index] = d;
-      // Drop far cache to save memory
       _detailCache.removeWhere((k, _) => (k - _index).abs() > 2);
     }).catchError((_) {}).whenComplete(() {
       if (_prefetchingIndex == index) _prefetchingIndex = null;
@@ -242,6 +308,8 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   void _onPageChanged(int page) {
     if (page == _index) return;
     _playIndex(page);
+    // ignore: unawaited_futures
+    _ensureMoreIfNearEnd(page);
   }
 
   void _seek(double v) {
@@ -290,7 +358,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
             PageView.builder(
               controller: _pageCtrl,
               scrollDirection: Axis.vertical,
-              itemCount: widget.items.length,
+              itemCount: _items.length,
               onPageChanged: _onPageChanged,
               itemBuilder: (_, i) {
                 if (i == _index &&
@@ -303,7 +371,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                     ),
                   );
                 }
-                final thumb = widget.items[i].thumb;
+                final thumb = _items[i].thumb;
                 return Container(
                   color: const Color(0xFF1A1A1A),
                   child: Stack(
@@ -321,23 +389,6 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                             color: Color(0xFFFF6B35),
                           ),
                         ),
-                      Positioned(
-                        left: 12,
-                        right: 12,
-                        bottom: 80,
-                        child: Text(
-                          widget.items[i].title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                            shadows: [
-                              Shadow(color: Colors.black, blurRadius: 4),
-                            ],
-                          ),
-                        ),
-                      ),
                     ],
                   ),
                 );

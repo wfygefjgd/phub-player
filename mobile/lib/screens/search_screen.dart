@@ -50,6 +50,11 @@ class _SearchScreenState extends State<SearchScreen>
     _Src.x: 1,
     _Src.zhong: 1,
   };
+  final Map<_Src, bool> _hasMore = {
+    _Src.ph: true,
+    _Src.x: true,
+    _Src.zhong: true,
+  };
 
   static const _labels = {
     _Src.ph: '热',
@@ -116,6 +121,7 @@ class _SearchScreenState extends State<SearchScreen>
         _error[s] = null;
         _loading[s] = true;
         _page[s] = 1;
+        _hasMore[s] = true;
       }
     });
 
@@ -166,15 +172,23 @@ class _SearchScreenState extends State<SearchScreen>
           break;
       }
       if (!mounted || gen != _searchGen) return;
-      final merged = replace ? list : [...?_results[src], ...list];
+      final prev = _results[src] ?? [];
+      final seen = <String>{for (final e in (replace ? <VideoItem>[] : prev)) e.viewkey};
+      final fresh = <VideoItem>[];
+      for (final e in list) {
+        if (seen.add(e.viewkey)) fresh.add(e);
+      }
+      final merged = replace ? fresh : [...prev, ...fresh];
       setState(() {
         _results[src] = merged;
         _page[src] = page;
         _loading[src] = false;
+        // Empty page or zero new items => stop paging
+        _hasMore[src] = list.isNotEmpty && fresh.isNotEmpty;
       });
       // Translate titles for PH/X only (中 usually already Chinese)
-      if (src != _Src.zhong && list.isNotEmpty) {
-        final start = replace ? 0 : merged.length - list.length;
+      if (src != _Src.zhong && fresh.isNotEmpty) {
+        final start = replace ? 0 : merged.length - fresh.length;
         _translateRange(src, start, gen);
       }
     } catch (e) {
@@ -188,9 +202,27 @@ class _SearchScreenState extends State<SearchScreen>
 
   Future<void> _loadMore(_Src src) async {
     if (_loading[src] == true || _lastQuery.isEmpty) return;
+    if (_hasMore[src] == false) return;
     final next = (_page[src] ?? 1) + 1;
     final q = src == _Src.zhong ? _lastQuery : (_enQuery ?? _lastQuery);
     await _searchOne(src, q, next, replace: false, gen: _searchGen);
+  }
+
+  /// Used by vertical search player to append pages without leaving the feed.
+  Future<List<VideoItem>> loadMoreForFeed(SearchSource source) async {
+    final src = switch (source) {
+      SearchSource.ph => _Src.ph,
+      SearchSource.x => _Src.x,
+      SearchSource.zhong => _Src.zhong,
+    };
+    if (_hasMore[src] == false || _loading[src] == true || _lastQuery.isEmpty) {
+      return const [];
+    }
+    final before = (_results[src] ?? []).length;
+    await _loadMore(src);
+    final all = _results[src] ?? [];
+    if (all.length <= before) return const [];
+    return all.sublist(before);
   }
 
   Future<void> _translateRange(_Src src, int start, int gen) async {
@@ -226,6 +258,7 @@ class _SearchScreenState extends State<SearchScreen>
           source: _toFeedSource(src),
           initialIndex: index,
           title: _labels[src]!,
+          onLoadMore: () => loadMoreForFeed(_toFeedSource(src)),
         ),
       ),
     );
@@ -241,7 +274,7 @@ class _SearchScreenState extends State<SearchScreen>
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
-        title: const Text('搜索'),
+        title: const Text('搜'),
         backgroundColor: const Color(0xFF1E1E1E),
         foregroundColor: Colors.white,
         bottom: TabBar(
@@ -382,37 +415,43 @@ class _SearchScreenState extends State<SearchScreen>
         ),
       );
     }
-    return ListView.builder(
-      itemCount: items.length + 1,
-      itemBuilder: (_, i) {
-        if (i == items.length) {
-          return Padding(
-            padding: const EdgeInsets.all(16),
-            child: Center(
-              child: loading
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        color: Color(0xFFFF6B35),
-                        strokeWidth: 2,
-                      ),
-                    )
-                  : TextButton(
-                      onPressed: () => _loadMore(src),
-                      child: const Text(
-                        '加载更多',
-                        style: TextStyle(color: Color(0xFFFF6B35)),
-                      ),
-                    ),
-            ),
-          );
+    final hasMore = _hasMore[src] ?? true;
+    return NotificationListener<ScrollNotification>(
+      onNotification: (n) {
+        if (n.metrics.pixels >= n.metrics.maxScrollExtent - 240) {
+          if (hasMore && !loading) _loadMore(src);
         }
-        return VideoCard(
-          item: items[i],
-          onTap: () => _openFeed(src, i),
-        );
+        return false;
       },
+      child: ListView.builder(
+        itemCount: items.length + 1,
+        itemBuilder: (_, i) {
+          if (i == items.length) {
+            return Padding(
+              padding: const EdgeInsets.all(16),
+              child: Center(
+                child: loading
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          color: Color(0xFFFF6B35),
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : Text(
+                        hasMore ? '上拉加载更多' : '没有更多了',
+                        style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
+              ),
+            );
+          }
+          return VideoCard(
+            item: items[i],
+            onTap: () => _openFeed(src, i),
+          );
+        },
+      ),
     );
   }
 }
