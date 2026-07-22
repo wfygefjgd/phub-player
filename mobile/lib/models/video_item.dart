@@ -17,6 +17,9 @@ class VideoItem {
     // XVideos: /video.xxxxx/slug
     final x = RegExp(r'/video\.([a-zA-Z0-9]+)').firstMatch(url);
     if (x != null) return x.group(1)!;
+    // mitaohk: /vod/play/id/123/
+    final mt = RegExp(r'/vod/play/id/(\d+)').firstMatch(url);
+    if (mt != null) return 'mt${mt.group(1)}';
     return url;
   }
 

@@ -21,8 +21,12 @@ class _HomeShellState extends State<HomeShell> {
   final _hotKey = GlobalKey<VideoFeedScreenState>();
   final _asianKey = GlobalKey<VideoFeedScreenState>();
   final _xKey = GlobalKey<VideoFeedScreenState>();
+  final _zhongKey = GlobalKey<VideoFeedScreenState>();
 
   bool get _iosSlim => !kIsWeb && Platform.isIOS;
+
+  /// Feed tab count: 热闹/亚洲/X/中
+  static const _feedTabCount = 4;
 
   @override
   void initState() {
@@ -34,19 +38,21 @@ class _HomeShellState extends State<HomeShell> {
 
   List<Widget> get _pages {
     if (_iosSlim) {
-      // 热闹 | 亚洲 | X | 搜索
+      // 热闹 | 亚洲 | X | 中 | 搜索
       return [
         VideoFeedScreen(key: _hotKey, kind: VideoFeedKind.hot),
         VideoFeedScreen(key: _asianKey, kind: VideoFeedKind.asian),
         VideoFeedScreen(key: _xKey, kind: VideoFeedKind.x),
+        VideoFeedScreen(key: _zhongKey, kind: VideoFeedKind.zhong),
         const SearchScreen(),
       ];
     }
-    // 热闹 | 亚洲 | X | 推荐 | 搜索 | 下载
+    // 热闹 | 亚洲 | X | 中 | 推荐 | 搜索 | 下载
     return [
       VideoFeedScreen(key: _hotKey, kind: VideoFeedKind.hot),
       VideoFeedScreen(key: _asianKey, kind: VideoFeedKind.asian),
       VideoFeedScreen(key: _xKey, kind: VideoFeedKind.x),
+      VideoFeedScreen(key: _zhongKey, kind: VideoFeedKind.zhong),
       const RecommendScreen(),
       const SearchScreen(),
       const DownloadScreen(),
@@ -73,6 +79,11 @@ class _HomeShellState extends State<HomeShell> {
           label: 'X',
         ),
         NavigationDestination(
+          icon: Icon(Icons.subtitles_outlined),
+          selectedIcon: Icon(Icons.subtitles, color: Color(0xFFFF6B35)),
+          label: '中',
+        ),
+        NavigationDestination(
           icon: Icon(Icons.search),
           selectedIcon: Icon(Icons.search, color: Color(0xFFFF6B35)),
           label: '搜索',
@@ -97,6 +108,11 @@ class _HomeShellState extends State<HomeShell> {
         label: 'X',
       ),
       NavigationDestination(
+        icon: Icon(Icons.subtitles_outlined),
+        selectedIcon: Icon(Icons.subtitles, color: Color(0xFFFF6B35)),
+        label: '中',
+      ),
+      NavigationDestination(
         icon: Icon(Icons.whatshot_outlined),
         selectedIcon: Icon(Icons.whatshot, color: Color(0xFFFF6B35)),
         label: '推荐',
@@ -116,10 +132,12 @@ class _HomeShellState extends State<HomeShell> {
 
   /// Only one vertical feed may play/preload at a time.
   void _activateFeed(int tabIndex) {
-    final hot = _hotKey.currentState;
-    final asian = _asianKey.currentState;
-    final x = _xKey.currentState;
-    final feeds = [hot, asian, x];
+    final feeds = [
+      _hotKey.currentState,
+      _asianKey.currentState,
+      _xKey.currentState,
+      _zhongKey.currentState,
+    ];
     for (var i = 0; i < feeds.length; i++) {
       if (i == tabIndex) {
         feeds[i]?.startPlaying();
@@ -127,6 +145,13 @@ class _HomeShellState extends State<HomeShell> {
         feeds[i]?.pausePlayback(releasePlayers: true);
       }
     }
+  }
+
+  void _pauseAllFeeds() {
+    _hotKey.currentState?.pausePlayback(releasePlayers: true);
+    _asianKey.currentState?.pausePlayback(releasePlayers: true);
+    _xKey.currentState?.pausePlayback(releasePlayers: true);
+    _zhongKey.currentState?.pausePlayback(releasePlayers: true);
   }
 
   @override
@@ -145,13 +170,11 @@ class _HomeShellState extends State<HomeShell> {
             selectedIndex: idx,
             onDestinationSelected: (i) {
               setState(() => _index = i);
-              // Feed tabs are 0=热闹, 1=亚洲, 2=X; others pause all feeds
-              if (i <= 2) {
+              // 0..3 = feeds; others pause all
+              if (i < _feedTabCount) {
                 _activateFeed(i);
               } else {
-                _hotKey.currentState?.pausePlayback(releasePlayers: true);
-                _asianKey.currentState?.pausePlayback(releasePlayers: true);
-                _xKey.currentState?.pausePlayback(releasePlayers: true);
+                _pauseAllFeeds();
               }
             },
             backgroundColor: Colors.black.withValues(alpha: 0.28),

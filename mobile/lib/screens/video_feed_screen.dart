@@ -6,6 +6,8 @@ import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/video_item.dart';
+import '../services/mitao_api.dart';
+import '../services/mitao_api.dart';
 import '../services/phub_api.dart';
 import '../services/translator.dart';
 import '../services/xvideos_api.dart';
@@ -20,6 +22,9 @@ enum VideoFeedKind {
 
   /// X — XVideos random mix
   x,
+
+  /// 中 — mitaohk 中文字幕 type/2
+  zhong,
 }
 
 class VideoFeedScreen extends StatefulWidget {
@@ -44,14 +49,24 @@ class _PageState {
 class VideoFeedScreenState extends State<VideoFeedScreen>
     with WidgetsBindingObserver {
   Map<String, String> get _httpHeaders {
-    if (widget.kind == VideoFeedKind.x) {
-      return {
-        ...AppHttpHeaders.browser,
-        'Referer': 'https://www.xvideos.com/',
-        'Origin': 'https://www.xvideos.com',
-      };
+    switch (widget.kind) {
+      case VideoFeedKind.x:
+        return {
+          ...AppHttpHeaders.browser,
+          'Referer': 'https://www.xvideos.com/',
+          'Origin': 'https://www.xvideos.com',
+        };
+      case VideoFeedKind.zhong:
+        return {
+          ...AppHttpHeaders.browser,
+          'Referer': 'https://mitaohk.com/',
+          'Origin': 'https://mitaohk.com',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        };
+      case VideoFeedKind.hot:
+      case VideoFeedKind.asian:
+        return AppHttpHeaders.browser;
     }
-    return AppHttpHeaders.browser;
   }
 
   final List<VideoItem> _items = [];
@@ -181,6 +196,12 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
               limit: limit,
               maxUrls: maxUrls,
             );
+      case VideoFeedKind.zhong:
+        return context.read<MitaoApi>().fetchZhong(
+              exclude: _seen,
+              limit: limit,
+              maxPages: maxUrls,
+            );
     }
   }
 
@@ -190,6 +211,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         return '亚洲';
       case VideoFeedKind.x:
         return 'X';
+      case VideoFeedKind.zhong:
+        return '中';
       case VideoFeedKind.hot:
         return '热闹';
     }
@@ -198,6 +221,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   Future<VideoDetail> _fetchDetail(String url) {
     if (url.contains('xvideos.com') || widget.kind == VideoFeedKind.x) {
       return context.read<XvideosApi>().getVideoDetail(url);
+    }
+    if (url.contains('mitaohk.com') || widget.kind == VideoFeedKind.zhong) {
+      return context.read<MitaoApi>().getVideoDetail(url);
     }
     return context.read<PhubApi>().getVideoDetail(url);
   }
