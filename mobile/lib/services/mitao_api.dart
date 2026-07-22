@@ -118,54 +118,194 @@ class MitaoApi {
 
   List<VideoItem> _parseList(String html, Set<String> seen) {
     final out = <VideoItem>[];
+    final detailRe = RegExp(r'/index\.php/vod/detail/id/(\d+)\.html');
     final playRe = RegExp(
       r'/index\.php/vod/play/id/(\d+)/sid/(\d+)/nid/(\d+)\.html',
     );
-    // Split by play links
-    final chunks = html.split(RegExp(r'(?=/index\.php/vod/play/id/\d+)'));
-    for (var i = 1; i < chunks.length; i++) {
-      final chunk = chunks[i];
-      final pm = playRe.firstMatch(chunk);
-      if (pm == null) continue;
-      final id = pm.group(1)!;
-      if (!seen.add(id)) continue;
 
+    final titles = <String, String>{};
+    final thumbs = <String, String>{};
+    final playPaths = <String, String>{};
+
+    void considerTitle(String id, String raw) {
+      final t = _cleanTitle(raw);
+      if (!_isGoodTitle(t, id)) return;
+      final prev = titles[id];
+      // Prefer longer / CJK-rich titles over short noise
+      if (prev == null || _titleScore(t) > _titleScore(prev)) {
+        titles[id] = t;
+      }
+    }
+
+    // Module cards: title attr + href (both orders)
+    for (final m in RegExp(
+      r'title="([^"]{2,200})"[^>]*href="(/index\.php/vod/(?:detail|play)/id/(\d+)[^"]*)"',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      final id = m.group(3)!;
+      considerTitle(id, m.group(1)!);
+      final href = m.group(2)!;
+      if (href.contains('/play/')) {
+        playPaths.putIfAbsent(id, () => href);
+      }
+    }
+    for (final m in RegExp(
+      r'href="(/index\.php/vod/(?:detail|play)/id/(\d+)[^"]*)"[^>]*title="([^"]{2,200})"',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      final id = m.group(2)!;
+      considerTitle(id, m.group(3)!);
+      final href = m.group(1)!;
+      if (href.contains('/play/')) {
+        playPaths.putIfAbsent(id, () => href);
+      }
+    }
+
+    // data-original / lazy img alt near detail links
+    for (final m in RegExp(
+      r'alt="([^"]{2,200})"[^>]*(?:data-original|data-src|src)="([^"]+)"[^>]{0,200}href="[^"]*vod/(?:detail|play)/id/(\d+)',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      considerTitle(m.group(3)!, m.group(1)!);
+      thumbs.putIfAbsent(m.group(3)!, () => m.group(2)!);
+    }
+
+    // Text inside titled anchors: <a href="...detail/id/N">真实标题</a>
+    for (final m in RegExp(
+      r'href="(/index\.php/vod/(?:detail|play)/id/(\d+)[^"]*)"[^>]*>\s*([^<]{4,200})\s*<',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      final id = m.group(2)!;
+      considerTitle(id, m.group(3)!);
+      final href = m.group(1)!;
+      if (href.contains('/play/')) {
+        playPaths.putIfAbsent(id, () => href);
+      }
+    }
+
+    for (final m in detailRe.allMatches(html)) {
+      final id = m.group(1)!;
+      final idx = m.start;
+      final start = idx > 800 ? idx - 800 : 0;
+      final end = (idx + 600).clamp(0, html.length);
+      final ctx = html.substring(start, end);
+      final t = _pickTitle(ctx, id);
+      if (t.isNotEmpty) considerTitle(id, t);
+      final th = _pickThumb(ctx);
+      if (th != null) thumbs.putIfAbsent(id, () => th);
+    }
+
+    for (final m in playRe.allMatches(html)) {
+      final id = m.group(1)!;
       final path =
-          '/index.php/vod/play/id/$id/sid/${pm.group(2)}/nid/${pm.group(3)}.html';
-
-      var title = '';
-      final t1 = RegExp(r'title="([^"]{2,120})"').firstMatch(chunk);
-      if (t1 != null) {
-        title = t1.group(1)!;
-      } else {
-        final t2 = RegExp(r'>([^<]{4,80})</a>').firstMatch(chunk);
-        title = t2?.group(1)?.trim() ?? '视频 $id';
+          '/index.php/vod/play/id/$id/sid/${m.group(2)}/nid/${m.group(3)}.html';
+      playPaths.putIfAbsent(id, () => path);
+      if (!titles.containsKey(id) || (thumbs[id] == null || thumbs[id]!.isEmpty)) {
+        final idx = m.start;
+        final start = idx > 800 ? idx - 800 : 0;
+        final end = (idx + 600).clamp(0, html.length);
+        final ctx = html.substring(start, end);
+        if (!titles.containsKey(id)) {
+          final t = _pickTitle(ctx, id);
+          if (t.isNotEmpty) considerTitle(id, t);
+        }
+        final th = _pickThumb(ctx);
+        if (th != null) thumbs.putIfAbsent(id, () => th);
       }
-      title = title
-          .replaceAll('&amp;', '&')
-          .replaceAll('&#039;', "'")
-          .replaceAll('&quot;', '"')
-          .trim();
-      if (title.length < 2) title = '视频 $id';
+    }
 
-      String? thumb;
-      final im = RegExp(
-        r'data-original="([^"]+)"|data-src="([^"]+)"|src="((?:https?:)?//[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
-        caseSensitive: false,
-      ).firstMatch(chunk);
-      if (im != null) {
-        thumb = im.group(1) ?? im.group(2) ?? im.group(3);
-        if (thumb != null) thumb = _abs(thumb);
+    // MacCMS list often has .module-item-title / .module-item-pic
+    for (final m in RegExp(
+      r'class="[^"]*module-item-title[^"]*"[^>]*>\s*<a[^>]*href="[^"]*id/(\d+)[^"]*"[^>]*>([^<]{2,200})</a>',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      considerTitle(m.group(1)!, m.group(2)!);
+    }
+    for (final m in RegExp(
+      r'class="[^"]*module-item-title[^"]*"[^>]*>\s*<a[^>]*title="([^"]{2,200})"[^>]*href="[^"]*id/(\d+)',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      considerTitle(m.group(2)!, m.group(1)!);
+    }
+
+    final ids = {...titles.keys, ...playPaths.keys, ...thumbs.keys};
+    for (final id in ids) {
+      if (!seen.add(id)) continue;
+      final path = playPaths[id] ??
+          '/index.php/vod/play/id/$id/sid/1/nid/1.html';
+      var title = titles[id] ?? '';
+      if (!_isGoodTitle(title, id)) {
+        title = '未命名 $id';
       }
 
+      final th = thumbs[id];
       out.add(VideoItem(
-        url: _abs(path),
+        url: _abs(path.startsWith('/') ? path : '/$path'),
         title: title,
         duration: '-',
-        thumb: thumb,
+        thumb: (th != null && th.isNotEmpty) ? _abs(th) : null,
       ));
     }
     return out;
+  }
+
+  String _cleanTitle(String t) => t
+      .replaceAll(RegExp(r'<[^>]+>'), '')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&#039;', "'")
+      .replaceAll('&quot;', '"')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  bool _isGoodTitle(String t, String id) {
+    if (t.isEmpty || t.length < 2) return false;
+    if (t == id || RegExp(r'^\d+$').hasMatch(t)) return false;
+    if (t == '中文字幕' || t == '更多' || t == '播放' || t == '详情') return false;
+    if (t.contains('点击') || t.contains('广告')) return false;
+    if (t.startsWith('视频') && RegExp(r'^视频\s*\d+$').hasMatch(t)) return false;
+    return true;
+  }
+
+  int _titleScore(String t) {
+    var s = t.length;
+    if (RegExp(r'[\u4e00-\u9fff]').hasMatch(t)) s += 20;
+    return s;
+  }
+
+  String _pickTitle(String ctx, String id) {
+    final cands = <String>[];
+    for (final m in RegExp(r'title="([^"]{2,200})"').allMatches(ctx)) {
+      cands.add(_cleanTitle(m.group(1)!));
+    }
+    for (final m in RegExp(r'alt="([^"]{2,200})"').allMatches(ctx)) {
+      cands.add(_cleanTitle(m.group(1)!));
+    }
+    for (final m in RegExp(
+      r'<(?:h[234]|span|p|div)[^>]*class="[^"]*(?:title|name|vod)[^"]*"[^>]*>([^<]{2,200})</',
+      caseSensitive: false,
+    ).allMatches(ctx)) {
+      cands.add(_cleanTitle(m.group(1)!));
+    }
+    // bare CJK text near link
+    for (final m in RegExp(r'>([\u4e00-\u9fff][^<]{3,80})<').allMatches(ctx)) {
+      cands.add(_cleanTitle(m.group(1)!));
+    }
+    String? best;
+    for (final t in cands) {
+      if (!_isGoodTitle(t, id)) continue;
+      if (best == null || _titleScore(t) > _titleScore(best)) best = t;
+    }
+    return best ?? '';
+  }
+
+  String? _pickThumb(String ctx) {
+    final im = RegExp(
+      r'data-original="([^"]+)"|data-src="([^"]+)"|data-bg="([^"]+)"|src="((?:https?:)?//[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+      caseSensitive: false,
+    ).firstMatch(ctx);
+    if (im == null) return null;
+    return im.group(1) ?? im.group(2) ?? im.group(3) ?? im.group(4);
   }
 
   Future<VideoDetail> getVideoDetail(String url) async {

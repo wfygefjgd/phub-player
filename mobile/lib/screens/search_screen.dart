@@ -22,10 +22,13 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen>
     with SingleTickerProviderStateMixin {
   final _controller = TextEditingController();
+  final _focus = FocusNode();
   late final TabController _tab;
 
   String _lastQuery = '';
   String? _enQuery; // cached English form for PH/X when input is Chinese
+  /// Bumps on every new search to drop stale async results/translates.
+  int _searchGen = 0;
 
   final Map<_Src, List<VideoItem>> _results = {
     _Src.ph: [],
@@ -67,8 +70,14 @@ class _SearchScreenState extends State<SearchScreen>
   @override
   void dispose() {
     _tab.dispose();
+    _focus.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  void _unfocus() {
+    _focus.unfocus();
+    FocusManager.instance.primaryFocus?.unfocus();
   }
 
   _Src get _active {
@@ -96,6 +105,8 @@ class _SearchScreenState extends State<SearchScreen>
   Future<void> _runAll() async {
     final q = _controller.text.trim();
     if (q.isEmpty) return;
+    _unfocus();
+    final gen = ++_searchGen;
     _lastQuery = q;
     _enQuery = null;
 
@@ -116,16 +127,17 @@ class _SearchScreenState extends State<SearchScreen>
         if (t.trim().isNotEmpty) en = t.trim();
       } catch (_) {}
     }
+    if (!mounted || gen != _searchGen) return;
     _enQuery = en;
 
     // Parallel: do not await sequentially
     // ignore: unawaited_futures
-    _searchOne(_Src.ph, en, 1, replace: true);
+    _searchOne(_Src.ph, en, 1, replace: true, gen: gen);
     // ignore: unawaited_futures
-    _searchOne(_Src.x, en, 1, replace: true);
+    _searchOne(_Src.x, en, 1, replace: true, gen: gen);
     // 中: keep Chinese keyword for local CMS
     // ignore: unawaited_futures
-    _searchOne(_Src.zhong, q, 1, replace: true);
+    _searchOne(_Src.zhong, q, 1, replace: true, gen: gen);
   }
 
   Future<void> _searchOne(
@@ -133,8 +145,9 @@ class _SearchScreenState extends State<SearchScreen>
     String query,
     int page, {
     required bool replace,
+    required int gen,
   }) async {
-    if (!mounted) return;
+    if (!mounted || gen != _searchGen) return;
     setState(() {
       _loading[src] = true;
       _error[src] = null;
@@ -152,7 +165,7 @@ class _SearchScreenState extends State<SearchScreen>
           list = await context.read<MitaoApi>().search(query, page: page);
           break;
       }
-      if (!mounted) return;
+      if (!mounted || gen != _searchGen) return;
       final merged = replace ? list : [...?_results[src], ...list];
       setState(() {
         _results[src] = merged;
@@ -162,10 +175,10 @@ class _SearchScreenState extends State<SearchScreen>
       // Translate titles for PH/X only (中 usually already Chinese)
       if (src != _Src.zhong && list.isNotEmpty) {
         final start = replace ? 0 : merged.length - list.length;
-        _translateRange(src, merged, start);
+        _translateRange(src, start, gen);
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _searchGen) return;
       setState(() {
         _loading[src] = false;
         _error[src] = e.toString().replaceFirst('PhubException: ', '');
@@ -177,21 +190,25 @@ class _SearchScreenState extends State<SearchScreen>
     if (_loading[src] == true || _lastQuery.isEmpty) return;
     final next = (_page[src] ?? 1) + 1;
     final q = src == _Src.zhong ? _lastQuery : (_enQuery ?? _lastQuery);
-    await _searchOne(src, q, next, replace: false);
+    await _searchOne(src, q, next, replace: false, gen: _searchGen);
   }
 
-  Future<void> _translateRange(_Src src, List<VideoItem> all, int start) async {
+  Future<void> _translateRange(_Src src, int start, int gen) async {
     try {
+      final all = _results[src];
+      if (all == null || start >= all.length) return;
       final slice = all.sublist(start);
-      final zh = await context
-          .read<Translator>()
-          .batchEnToZh(slice.map((e) => e.title).toList());
-      if (!mounted) return;
+      final urls = slice.map((e) => e.url).toList();
+      final titles = slice.map((e) => e.title).toList();
+      final zh = await context.read<Translator>().batchEnToZh(titles);
+      if (!mounted || gen != _searchGen) return;
       setState(() {
         final list = _results[src]!;
         for (var i = 0; i < zh.length; i++) {
           final idx = start + i;
-          if (idx < list.length) {
+          if (idx >= list.length) break;
+          // Match by URL so a later load-more shift won't corrupt titles
+          if (list[idx].url == urls[i]) {
             list[idx] = list[idx].copyWith(title: zh[i]);
           }
         }
@@ -271,6 +288,7 @@ class _SearchScreenState extends State<SearchScreen>
                 Expanded(
                   child: TextField(
                     controller: _controller,
+                    focusNode: _focus,
                     style: const TextStyle(color: Colors.white),
                     textInputAction: TextInputAction.search,
                     onSubmitted: (_) => _runAll(),
@@ -299,7 +317,7 @@ class _SearchScreenState extends State<SearchScreen>
                       vertical: 14,
                     ),
                   ),
-                  onPressed: () => _runAll(),
+                  onPressed: _runAll,
                   child: const Text('搜索'),
                 ),
               ],
@@ -346,7 +364,7 @@ class _SearchScreenState extends State<SearchScreen>
                   if (q.isEmpty) {
                     _runAll();
                   } else {
-                    _searchOne(src, q, 1, replace: true);
+                    _searchOne(src, q, 1, replace: true, gen: _searchGen);
                   }
                 },
                 child: const Text('重试'),

@@ -12,17 +12,16 @@ class Translator {
             );
 
   final Dio _dio;
+  /// Direction-aware cache only: "en_zh-CN:text" / "zh-CN_en:text"
   final Map<String, String> _cache = {};
 
   static final _zhRe = RegExp(r'[\u4e00-\u9fff]');
 
-  /// True if [text] contains CJK unified ideographs.
   bool containsChinese(String text) => _zhRe.hasMatch(text);
 
   Future<String> enToZh(String text) async =>
       _translate(text, from: 'en', to: 'zh-CN');
 
-  /// Chinese / auto → English (for search queries).
   Future<String> zhToEn(String text) async =>
       _translate(text, from: 'zh-CN', to: 'en');
 
@@ -31,13 +30,18 @@ class Translator {
     required String from,
     required String to,
   }) async {
-    final key = '${from}_$to:${text.trim()}';
-    if (text.trim().isEmpty) return text;
+    final raw = text.trim();
+    if (raw.isEmpty) return text;
+    // Skip en→zh when already mostly Chinese (avoids re-translating cache hits)
+    if (from == 'en' && to.startsWith('zh') && containsChinese(raw)) {
+      return text;
+    }
+    final key = '${from}_$to:$raw';
     final hit = _cache[key];
     if (hit != null) return hit;
     try {
       final encoded = Uri.encodeQueryComponent(
-        text.length > 5000 ? text.substring(0, 5000) : text,
+        raw.length > 4500 ? raw.substring(0, 4500) : raw,
       );
       final url =
           'https://translate.googleapis.com/translate_a/single?client=gtx&sl=$from&tl=$to&dt=t&q=$encoded';
@@ -52,70 +56,45 @@ class Translator {
       }
       final out = buf.toString().trim();
       final result = out.isEmpty ? text : out;
-      _cache[key] = result;
-      // Also cache plain key for enToZh batch compatibility
-      if (from == 'en' && to == 'zh-CN') {
-        _cache[text.trim()] = result;
+      // Reject obvious garbage one-liners that are far shorter ad noise
+      if (_looksLikeGarbageTitle(result) && !_looksLikeGarbageTitle(raw)) {
+        return text;
       }
+      _cache[key] = result;
       return result;
     } catch (_) {
       return text;
     }
   }
 
+  /// Translate each title separately — NEVER join with \\n.
+  /// Joined batch was corrupting search titles on 2nd search.
   Future<List<String>> batchEnToZh(List<String> texts) async {
     if (texts.isEmpty) return [];
-    // Resolve cache hits first; only request uncached lines.
     final out = List<String>.filled(texts.length, '');
-    final needIdx = <int>[];
-    final needTexts = <String>[];
-    for (var i = 0; i < texts.length; i++) {
-      final t = texts[i];
-      final hit = _cache[t.trim()] ?? _cache['en_zh-CN:${t.trim()}'];
-      if (hit != null) {
-        out[i] = hit;
-      } else {
-        needIdx.add(i);
-        needTexts.add(t);
+    // small concurrency without flood; preserve index mapping
+    const chunk = 5;
+    for (var i = 0; i < texts.length; i += chunk) {
+      final end = (i + chunk > texts.length) ? texts.length : i + chunk;
+      final futures = <Future<String>>[];
+      for (var j = i; j < end; j++) {
+        futures.add(enToZh(texts[j]));
+      }
+      final parts = await Future.wait(futures);
+      for (var k = 0; k < parts.length; k++) {
+        out[i + k] = parts[k];
       }
     }
-    if (needTexts.isEmpty) return out;
+    return out;
+  }
 
-    try {
-      final joined = needTexts.join('\n');
-      final encoded = Uri.encodeQueryComponent(
-        joined.length > 5000 ? joined.substring(0, 5000) : joined,
-      );
-      final url =
-          'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=$encoded';
-      final res = await _dio.get(url);
-      final data = res.data;
-      if (data is! List || data.isEmpty || data[0] is! List) {
-        for (var k = 0; k < needIdx.length; k++) {
-          out[needIdx[k]] = needTexts[k];
-        }
-        return out;
-      }
-      final buf = StringBuffer();
-      for (final part in data[0] as List) {
-        if (part is List && part.isNotEmpty && part[0] != null) {
-          buf.write(part[0]);
-        }
-      }
-      final lines = buf.toString().split('\n');
-      for (var k = 0; k < needIdx.length; k++) {
-        final src = needTexts[k];
-        final zh = k < lines.length && lines[k].isNotEmpty ? lines[k] : src;
-        out[needIdx[k]] = zh;
-        _cache[src.trim()] = zh;
-        _cache['en_zh-CN:${src.trim()}'] = zh;
-      }
-      return out;
-    } catch (_) {
-      for (var k = 0; k < needIdx.length; k++) {
-        out[needIdx[k]] = await enToZh(needTexts[k]);
-      }
-      return out;
+  static bool _looksLikeGarbageTitle(String t) {
+    final s = t.toLowerCase();
+    if (s.contains('奖得主') || s.contains('award') || s.contains('winner')) {
+      if (s.length < 40) return true;
     }
+    if (s.contains('点击') && s.contains('下载')) return true;
+    if (s.contains('广告')) return true;
+    return false;
   }
 }

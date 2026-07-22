@@ -607,23 +607,22 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
   Widget _buildMuteButton() {
     return Positioned(
-      right: 4,
+      right: 10,
       bottom: 52,
       child: SafeArea(
-        child: Container(
-          width: 32,
-          height: 32,
-          decoration: const BoxDecoration(
-            color: Colors.black45,
-            shape: BoxShape.circle,
-          ),
+        child: Material(
+          color: Colors.black54,
+          shape: const CircleBorder(),
           child: InkWell(
-            borderRadius: BorderRadius.circular(16),
+            customBorder: const CircleBorder(),
             onTap: _toggleMute,
-            child: Icon(
-              _muted ? Icons.volume_off : Icons.volume_up,
-              color: Colors.white,
-              size: 18,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Icon(
+                _muted ? Icons.volume_off : Icons.volume_up,
+                color: Colors.white,
+                size: 28,
+              ),
             ),
           ),
         ),

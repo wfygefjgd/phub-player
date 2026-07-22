@@ -2,12 +2,33 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../models/video_item.dart';
+import '../utils/http_headers.dart';
 
 class VideoCard extends StatelessWidget {
   final VideoItem item;
   final VoidCallback onTap;
 
   const VideoCard({super.key, required this.item, required this.onTap});
+
+  Map<String, String> get _thumbHeaders {
+    final u = item.thumb ?? item.url;
+    if (u.contains('xvideos') || u.contains('xvideos-cdn') || u.contains('xnxx')) {
+      return {
+        ...AppHttpHeaders.browser,
+        'Referer': 'https://www.xvideos.com/',
+        'Origin': 'https://www.xvideos.com',
+      };
+    }
+    if (u.contains('mitao') || u.contains('mitaohk')) {
+      return {
+        ...AppHttpHeaders.browser,
+        'Referer': 'https://mitaohk.com/',
+        'Origin': 'https://mitaohk.com',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      };
+    }
+    return AppHttpHeaders.browser;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +50,7 @@ class VideoCard extends StatelessWidget {
                   if (item.thumb != null && item.thumb!.isNotEmpty)
                     CachedNetworkImage(
                       imageUrl: item.thumb!,
+                      httpHeaders: _thumbHeaders,
                       fit: BoxFit.cover,
                       placeholder: (_, __) =>
                           Container(color: const Color(0xFF1A1A1A)),

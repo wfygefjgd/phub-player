@@ -363,13 +363,39 @@ class PhubApi {
   }
 
   String? _extractTitle(String chunk) {
-    final m = RegExp(r'title="([^"]{5,})"').firstMatch(chunk);
-    if (m == null) return null;
-    return m
-        .group(1)!
-        .replaceAll('&#039;', "'")
-        .replaceAll('&amp;', '&')
-        .replaceAll('&quot;', '"');
+    // Prefer explicit video titles; skip UI / promo noise.
+    final candidates = <String>[];
+    for (final m in RegExp(r'title="([^"]{4,200})"').allMatches(chunk)) {
+      candidates.add(m.group(1)!);
+    }
+    final alt = RegExp(r'alt="([^"]{4,200})"').firstMatch(chunk);
+    if (alt != null) candidates.add(alt.group(1)!);
+    String? best;
+    for (var t in candidates) {
+      t = t
+          .replaceAll('&#039;', "'")
+          .replaceAll('&amp;', '&')
+          .replaceAll('&quot;', '"')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      if (t.length < 4) continue;
+      final low = t.toLowerCase();
+      if (low.contains('toggle') ||
+          low.contains('logo') ||
+          low.contains('pornhub') ||
+          low.contains('award') ||
+          low.contains('winner') ||
+          t.contains('奖得主') ||
+          t.contains('广告')) {
+        continue;
+      }
+      if (best == null || t.length > best.length) best = t;
+    }
+    // Cap absurdly long meta titles
+    if (best != null && best.length > 160) {
+      best = best.substring(0, 160);
+    }
+    return best;
   }
 
   String _extractDuration(String chunk) {

@@ -19,6 +19,7 @@ class XvideosApi {
                   'Referer': 'https://www.xvideos.com/',
                   'Origin': 'https://www.xvideos.com',
                   'Cookie': 'age_confirmed=1',
+                  'Accept-Language': 'en-US,en;q=0.9',
                 },
                 followRedirects: true,
                 validateStatus: (s) => s != null && s < 500,
@@ -27,16 +28,17 @@ class XvideosApi {
 
   final Dio _dio;
 
-  static final _videoHrefRe =
-      RegExp(r'href="(/video\.[a-zA-Z0-9]+/[^"]+)"');
-  static final _titleRe = RegExp(r'title="([^"]{5,200})"');
-  static final _thumbRe = RegExp(
-    r'data-src="(https?://[^"]+)"|data-idthumb="(https?://[^"]+)"|src="(https?://[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
-    caseSensitive: false,
-  );
-
   Future<String> _getHtml(String url) async {
-    final res = await _dio.get<String>(url);
+    final res = await _dio.get<String>(
+      url,
+      options: Options(
+        responseType: ResponseType.plain,
+        headers: {
+          'Accept':
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      ),
+    );
     if (res.statusCode == 403) {
       throw PhubException('访问被拒绝 (403)，请检查网络环境');
     }
@@ -49,19 +51,41 @@ class XvideosApi {
     return res.data!;
   }
 
-  /// Keyword search (page starts at 0 on xvideos: p=0 is first page).
+  /// Keyword search. XVideos uses p=0 for first page.
   Future<List<VideoItem>> search(String query, {int page = 1}) async {
-    final q = Uri.encodeQueryComponent(query.trim());
-    if (q.isEmpty) return [];
+    final raw = query.trim();
+    if (raw.isEmpty) return [];
+    final q = Uri.encodeQueryComponent(raw);
     final p = (page - 1).clamp(0, 999);
-    final url = p == 0
-        ? 'https://www.xvideos.com/?k=$q'
-        : 'https://www.xvideos.com/?k=$q&p=$p';
-    final html = await _getHtml(url);
-    return _parseList(html, <String>{});
+    // Multiple URL shapes — site HTML changes often
+    final urls = <String>[
+      if (p == 0) ...[
+        'https://www.xvideos.com/?k=$q',
+        'https://www.xvideos.com/?k=$q&sort=relevance',
+        'https://www.xvideos.com/?k=$q&sort=relevance&datef=alltime',
+        'https://www.xvideos.com/search/$q',
+      ] else ...[
+        'https://www.xvideos.com/?k=$q&p=$p',
+        'https://www.xvideos.com/?k=$q&p=$p&sort=relevance',
+        'https://www.xvideos.com/?k=$q&p=$p&sort=relevance&datef=alltime',
+        'https://www.xvideos.com/search/$q/$p',
+      ],
+    ];
+    Object? lastErr;
+    for (final url in urls) {
+      try {
+        final html = await _getHtml(url);
+        final list = _parseList(html, <String>{});
+        if (list.isNotEmpty) return list;
+      } catch (e) {
+        lastErr = e;
+        continue;
+      }
+    }
+    if (lastErr != null) throw lastErr;
+    return [];
   }
 
-  /// Random mix of home / asian keyword / best pages (like 热闹 regeneration).
   Future<List<VideoItem>> fetchFeed({
     int limit = 40,
     Set<String>? exclude,
@@ -84,7 +108,7 @@ class XvideosApi {
       'https://www.xvideos.com/best',
     ];
     for (final k in keywords) {
-      final p = rng.nextInt(20); // 0..19
+      final p = rng.nextInt(20);
       urls.add(
         p == 0
             ? 'https://www.xvideos.com/?k=$k'
@@ -114,33 +138,92 @@ class XvideosApi {
 
   List<VideoItem> _parseList(String html, Set<String> seen) {
     final out = <VideoItem>[];
-    // Split roughly by video cards
-    final chunks = html.split(RegExp(r'(?=href="/video\.[a-zA-Z0-9]+/)'));
-    for (var i = 1; i < chunks.length; i++) {
-      final chunk = chunks[i];
-      final hm = _videoHrefRe.firstMatch(chunk);
+    // Card blocks often use id="video_XXXX" (numeric or mixed)
+    final blocks = html.split(RegExp(r'(?=<div[^>]+id="video_[^"]+")'));
+    Iterable<String> iterable;
+    if (blocks.length > 1) {
+      iterable = blocks.skip(1);
+    } else {
+      // Fallback: split on video hrefs (new layout / search pages)
+      iterable = html.split(RegExp(r'(?=href="(?:https?://(?:www\.)?xvideos\.com)?/video\.[a-zA-Z0-9]+/)'));
+      if (iterable.length <= 1) {
+        iterable = html.split(RegExp(r'(?=href="/video\.[a-zA-Z0-9]+/)'));
+      }
+    }
+
+    for (final chunk in iterable) {
+      final hm = RegExp(
+        r'href="(?:https?://(?:www\.)?xvideos\.com)?(/video\.[a-zA-Z0-9]+/[^"#?]+)"',
+      ).firstMatch(chunk);
       if (hm == null) continue;
       final path = hm.group(1)!;
-      // id key: video.xxxxx
       final idM = RegExp(r'/video\.([a-zA-Z0-9]+)').firstMatch(path);
       final id = idM?.group(1) ?? path;
       if (!seen.add(id)) continue;
 
-      final titleM = _titleRe.firstMatch(chunk);
-      if (titleM == null) continue;
-      var title = titleM
-          .group(1)!
+      String? title;
+      // Prefer title on the video link
+      final tLink = RegExp(
+        r'href="(?:https?://(?:www\.)?xvideos\.com)?/video\.[a-zA-Z0-9]+/[^"]+"[^>]*title="([^"]+)"',
+      ).firstMatch(chunk);
+      final tTitleFirst = RegExp(
+        r'title="([^"]+)"[^>]*href="(?:https?://(?:www\.)?xvideos\.com)?/video\.[a-zA-Z0-9]+/',
+      ).firstMatch(chunk);
+      if (tLink != null) {
+        title = tLink.group(1);
+      } else if (tTitleFirst != null) {
+        title = tTitleFirst.group(1);
+      } else {
+        for (final m in RegExp(r'title="([^"]{5,200})"').allMatches(chunk)) {
+          final c = m.group(1)!;
+          final low = c.toLowerCase();
+          if (low.contains('toggle') ||
+              low.contains('logo') ||
+              low.contains('menu') ||
+              low.contains('search') ||
+              low.contains('settings') ||
+              low.contains('xvideos')) {
+            continue;
+          }
+          title = c;
+          break;
+        }
+      }
+      // <p class="title"> / .thumb-under title text
+      if (title == null || title.length < 3) {
+        final pTitle = RegExp(
+          r'class="[^"]*title[^"]*"[^>]*>\s*<a[^>]*>([^<]{3,200})</a>',
+          caseSensitive: false,
+        ).firstMatch(chunk);
+        if (pTitle != null) title = pTitle.group(1);
+      }
+      // slug fallback from path
+      if (title == null || title.length < 3) {
+        final slug = path.split('/').last.replaceAll('_', ' ').trim();
+        if (slug.length >= 3) title = slug;
+      }
+      if (title == null || title.length < 3) continue;
+      title = title
           .replaceAll('&#039;', "'")
           .replaceAll('&amp;', '&')
-          .replaceAll('&quot;', '"');
-      if (title.length < 5) continue;
-      // skip UI chrome
-      if (title.toLowerCase().contains('toggle')) continue;
+          .replaceAll('&quot;', '"')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
 
       String? thumb;
-      final tm = _thumbRe.firstMatch(chunk);
+      final tm = RegExp(
+        r'data-src="((?:https?:)?//[^"]+)"|data-srcse="((?:https?:)?//[^"]+)"|data-idthumb="((?:https?:)?//[^"]+)"|data-thumb="((?:https?:)?//[^"]+)"|src="((?:https?:)?//[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+        caseSensitive: false,
+      ).firstMatch(chunk);
       if (tm != null) {
-        thumb = tm.group(1) ?? tm.group(2) ?? tm.group(3);
+        thumb = tm.group(1) ??
+            tm.group(2) ??
+            tm.group(3) ??
+            tm.group(4) ??
+            tm.group(5);
+      }
+      if (thumb != null && thumb.startsWith('//')) {
+        thumb = 'https:$thumb';
       }
 
       out.add(VideoItem(

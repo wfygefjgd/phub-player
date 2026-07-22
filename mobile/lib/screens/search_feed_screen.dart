@@ -362,18 +362,27 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                 ),
               ),
               Positioned(
-                right: 8,
+                right: 10,
                 bottom: 56,
                 child: SafeArea(
-                  child: IconButton(
-                    onPressed: () {
-                      _muted = !_muted;
-                      _controller?.setVolume(_muted ? 0 : 1);
-                      setState(() {});
-                    },
-                    icon: Icon(
-                      _muted ? Icons.volume_off : Icons.volume_up,
-                      color: Colors.white,
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: () {
+                        _muted = !_muted;
+                        _controller?.setVolume(_muted ? 0 : 1);
+                        setState(() {});
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Icon(
+                          _muted ? Icons.volume_off : Icons.volume_up,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
                     ),
                   ),
                 ),
