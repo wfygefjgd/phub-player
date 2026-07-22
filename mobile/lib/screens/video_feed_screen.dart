@@ -11,6 +11,7 @@ import '../services/phub_api.dart';
 import '../services/translator.dart';
 import '../services/xvideos_api.dart';
 import '../services/app_settings.dart';
+import '../services/feed_list_cache.dart';
 import '../utils/http_headers.dart';
 import '../utils/playback_helpers.dart';
 
@@ -41,7 +42,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     with WidgetsBindingObserver {
   final List<VideoItem> _items = [];
   final Set<String> _seen = {};
-  final PageController _pageCtrl = PageController();
+  late final PageController _pageCtrl;
 
   /// Only the currently playing controller (never multiple).
   VideoPlayerController? _controller;
@@ -69,6 +70,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   int _failStreak = 0;
   final Map<int, VideoDetail> _detailCache = {};
   int? _prefetchingIndex;
+  bool _seeking = false;
+  VideoDetail? _currentDetail;
+  String get _cacheKey => widget.kind.name;
 
   Map<String, String> get _httpHeaders {
     switch (widget.kind) {
@@ -108,6 +112,15 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _muted = context.read<AppSettings>().muted;
+    final snap = FeedListCache.take(_cacheKey);
+    if (snap != null && snap.items.isNotEmpty) {
+      _items.addAll(snap.items);
+      _seen.addAll(snap.seen);
+      _currentIndex = snap.index.clamp(0, _items.length - 1);
+      _loading = false;
+    }
+    _pageCtrl = PageController(initialPage: _currentIndex);
     if (widget.autoStart) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) startPlaying();
@@ -117,6 +130,16 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
   @override
   void dispose() {
+    if (_items.isNotEmpty) {
+      FeedListCache.put(
+        _cacheKey,
+        FeedListSnapshot(
+          items: List<VideoItem>.from(_items),
+          seen: Set<String>.from(_seen),
+          index: _currentIndex,
+        ),
+      );
+    }
     WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();
     _sliderValue.dispose();
@@ -335,8 +358,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     }
     if (!mounted || seq != _loadSeq || !_active) return;
 
-    // Prefer lower quality on Android for stability
-    final stream = detail.preferredStream ?? detail.bestStream;
+    final cap = context.read<AppSettings>().qualityCap;
+    final stream = PlaybackHelpers.pickStream(detail, cap) ?? detail.bestStream;
     if (stream == null) {
       setState(() => _pageLoading = false);
       _scheduleSkipToNext(index);
@@ -344,6 +367,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     }
 
     _baseSpeed = _estimateBaseSpeed(stream.height);
+    _currentDetail = detail;
 
     final ctrl = VideoPlayerController.networkUrl(
       Uri.parse(stream.url),
@@ -366,6 +390,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     }
 
     _failStreak = 0;
+    _muted = context.read<AppSettings>().muted;
     ctrl.setVolume(_muted ? 0 : 1);
     final skip = context.read<AppSettings>().skipIntro;
     await PlaybackHelpers.skipIntro(ctrl, enabled: skip);
@@ -377,7 +402,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     setState(() {
       _pageLoading = false;
       _titleText = detail.title;
-      _totalTime = _fmtDuration(ctrl.value.duration);
+      _totalTime = PlaybackHelpers.fmtDuration(ctrl.value.duration);
     });
     _translateTitleOnly(detail.title);
     await ctrl.play();
@@ -437,11 +462,12 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _lastBufferedMs = bufMs;
       _lastTickMs = now;
       _lastPosMs = posMs;
+      if (_seeking) return;
       _sliderValue.value =
           (pos.inMilliseconds / dur.inMilliseconds).clamp(0.0, 1.0);
-      _currentTime.value = _fmtDuration(pos);
+      _currentTime.value = PlaybackHelpers.fmtDuration(pos);
       if (dur.inMilliseconds > 0) {
-        final t = _fmtDuration(dur);
+        final t = PlaybackHelpers.fmtDuration(dur);
         if (t != _totalTime && mounted) {
           setState(() => _totalTime = t);
         }
@@ -481,22 +507,58 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     final pos = (c.value.duration.inMilliseconds * v).round();
     c.seekTo(Duration(milliseconds: pos));
     _sliderValue.value = v;
+    _currentTime.value =
+        PlaybackHelpers.fmtDuration(Duration(milliseconds: pos));
   }
 
   void _toggleMute() {
     _muted = !_muted;
     _controller?.setVolume(_muted ? 0 : 1);
+    context.read<AppSettings>().setMuted(_muted);
     setState(() {});
   }
 
-  String _fmtDuration(Duration d) {
-    final h = d.inHours;
-    final m = d.inMinutes.remainder(60);
-    final s = d.inSeconds.remainder(60);
-    if (h > 0) {
-      return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  void _showQualityPicker() {
+    final detail = _currentDetail;
+    if (detail == null || detail.streams.isEmpty) return;
+    final settings = context.read<AppSettings>();
+    final heights = <int>{0};
+    for (final s in detail.streams) {
+      if (s.height > 0) heights.add(s.height);
     }
-    return '$m:${s.toString().padLeft(2, '0')}';
+    final options = heights.toList()..sort();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('画质', style: TextStyle(color: Colors.white70)),
+                dense: true,
+              ),
+              for (final h in options)
+                ListTile(
+                  title: Text(
+                    h == 0 ? '自动' : '${h}p',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  trailing: settings.qualityCap == h
+                      ? const Icon(Icons.check, color: Color(0xFFFF6B35))
+                      : null,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await settings.setQualityCap(h);
+                    if (mounted) _playIndex(_currentIndex);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -606,8 +668,50 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
             if (_controller != null || _pageLoading) ...[
               _buildTitleOverlay(),
               _buildSpeedBadge(),
-              _buildMuteButton(),
-              _buildProgressBar(),
+              Positioned(
+                right: 10,
+                bottom: 108,
+                child: SafeArea(
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: _showQualityPicker,
+                      child: const Padding(
+                        padding: EdgeInsets.all(10),
+                        child: Icon(Icons.high_quality,
+                            color: Colors.white, size: 22),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 10,
+                bottom: 52,
+                child: SafeArea(
+                  child: FeedMuteButton(muted: _muted, onTap: _toggleMute),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: SafeArea(
+                  child: FeedProgressBar(
+                    slider: _sliderValue,
+                    curTime: _currentTime,
+                    totalTime: _totalTime,
+                    onChanged: _seek,
+                    onChangeStart: (_) => _seeking = true,
+                    onChangeEnd: (v) {
+                      _seek(v);
+                      _seeking = false;
+                    },
+                  ),
+                ),
+              ),
             ],
           ],
         ),
@@ -658,96 +762,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
               fontSize: 10,
               fontWeight: FontWeight.w600,
             ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMuteButton() {
-    return Positioned(
-      right: 10,
-      bottom: 52,
-      child: SafeArea(
-        child: Material(
-          color: Colors.black54,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: _toggleMute,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Icon(
-                _muted ? Icons.volume_off : Icons.volume_up,
-                color: Colors.white,
-                size: 28,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProgressBar() {
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 0,
-      child: SafeArea(
-        child: Container(
-          height: 44,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-              colors: [Colors.black87, Colors.transparent],
-            ),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              ValueListenableBuilder<String>(
-                valueListenable: _currentTime,
-                builder: (_, t, __) => Text(
-                  t,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 10,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderThemeData(
-                    trackHeight: 2,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 5),
-                    overlayShape:
-                        const RoundSliderOverlayShape(overlayRadius: 10),
-                    activeTrackColor: const Color(0xFFFF6B35),
-                    inactiveTrackColor: Colors.white24,
-                    thumbColor: const Color(0xFFFF6B35),
-                  ),
-                  child: ValueListenableBuilder<double>(
-                    valueListenable: _sliderValue,
-                    builder: (_, v, __) => Slider(
-                      value: v.clamp(0.0, 1.0),
-                      onChanged: _seek,
-                    ),
-                  ),
-                ),
-              ),
-              Text(
-                _totalTime,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 10,
-                  fontFeatures: [FontFeature.tabularFigures()],
-                ),
-              ),
-            ],
           ),
         ),
       ),

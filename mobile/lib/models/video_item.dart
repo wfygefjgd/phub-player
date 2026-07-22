@@ -102,11 +102,27 @@ class VideoDetail {
   /// Prefer <= 720p for mobile data / stability.
   StreamQuality? get preferredStream {
     if (streams.isEmpty) return null;
-    final under720 = streams.where((s) => s.height > 0 && s.height <= 720).toList();
+    final under720 =
+        streams.where((s) => s.height > 0 && s.height <= 720).toList();
     if (under720.isNotEmpty) {
       under720.sort((a, b) => b.pixels.compareTo(a.pixels));
       return under720.first;
     }
     return bestStream;
+  }
+
+  /// [maxHeight] 0/null => preferredStream; else highest stream <= cap.
+  StreamQuality? streamForCap(int? maxHeight) {
+    if (streams.isEmpty) return null;
+    if (maxHeight == null || maxHeight <= 0) return preferredStream;
+    final under =
+        streams.where((s) => s.height > 0 && s.height <= maxHeight).toList();
+    if (under.isNotEmpty) {
+      under.sort((a, b) => b.pixels.compareTo(a.pixels));
+      return under.first;
+    }
+    // Cap lower than all — pick lowest
+    final sorted = [...streams]..sort((a, b) => a.pixels.compareTo(b.pixels));
+    return sorted.first;
   }
 }

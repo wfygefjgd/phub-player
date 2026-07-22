@@ -1,6 +1,9 @@
-import 'package:dio/dio.dart';
+import 'dart:convert';
 
-/// Free Google Translate endpoint (same idea as desktop).
+import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// Free Google Translate endpoint + memory/disk cache.
 class Translator {
   Translator({Dio? dio})
       : _dio = dio ??
@@ -12,12 +15,45 @@ class Translator {
             );
 
   final Dio _dio;
-  /// Direction-aware cache only: "en_zh-CN:text" / "zh-CN_en:text"
   final Map<String, String> _cache = {};
+  static const _diskKey = 'translator_disk_v1';
+  static const _maxDiskEntries = 400;
+  bool _diskLoaded = false;
 
   static final _zhRe = RegExp(r'[\u4e00-\u9fff]');
 
   bool containsChinese(String text) => _zhRe.hasMatch(text);
+
+  Future<void> _ensureDisk() async {
+    if (_diskLoaded) return;
+    _diskLoaded = true;
+    try {
+      final p = await SharedPreferences.getInstance();
+      final raw = p.getString(_diskKey);
+      if (raw == null || raw.isEmpty) return;
+      final map = jsonDecode(raw);
+      if (map is Map) {
+        map.forEach((k, v) {
+          if (k is String && v is String && k.isNotEmpty && v.isNotEmpty) {
+            _cache.putIfAbsent(k, () => v);
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _persistDisk() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final entries = _cache.entries.toList();
+      // Keep newest-ish tail if oversized
+      final slice = entries.length > _maxDiskEntries
+          ? entries.sublist(entries.length - _maxDiskEntries)
+          : entries;
+      final map = <String, String>{for (final e in slice) e.key: e.value};
+      await p.setString(_diskKey, jsonEncode(map));
+    } catch (_) {}
+  }
 
   Future<String> enToZh(String text) async =>
       _translate(text, from: 'en', to: 'zh-CN');
@@ -32,10 +68,10 @@ class Translator {
   }) async {
     final raw = text.trim();
     if (raw.isEmpty) return text;
-    // Skip en→zh when already mostly Chinese (avoids re-translating cache hits)
     if (from == 'en' && to.startsWith('zh') && containsChinese(raw)) {
       return text;
     }
+    await _ensureDisk();
     final key = '${from}_$to:$raw';
     final hit = _cache[key];
     if (hit != null) return hit;
@@ -56,23 +92,23 @@ class Translator {
       }
       final out = buf.toString().trim();
       final result = out.isEmpty ? text : out;
-      // Reject obvious garbage one-liners that are far shorter ad noise
       if (_looksLikeGarbageTitle(result) && !_looksLikeGarbageTitle(raw)) {
         return text;
       }
       _cache[key] = result;
+      // fire-and-forget disk write
+      // ignore: unawaited_futures
+      _persistDisk();
       return result;
     } catch (_) {
       return text;
     }
   }
 
-  /// Translate each title separately — NEVER join with \\n.
-  /// Joined batch was corrupting search titles on 2nd search.
   Future<List<String>> batchEnToZh(List<String> texts) async {
     if (texts.isEmpty) return [];
+    await _ensureDisk();
     final out = List<String>.filled(texts.length, '');
-    // small concurrency without flood; preserve index mapping
     const chunk = 5;
     for (var i = 0; i < texts.length; i += chunk) {
       final end = (i + chunk > texts.length) ? texts.length : i + chunk;

@@ -51,6 +51,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   bool _pageLoading = false;
   bool _loadingMore = false;
   bool _muted = false;
+  bool _seeking = false;
   String _titleText = '';
   String _totalTime = '0:00';
   Timer? _progressTimer;
@@ -59,6 +60,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
 
   final Map<int, VideoDetail> _detailCache = {};
   int? _prefetchingIndex;
+  VideoDetail? _currentDetail;
 
   Map<String, String> get _headers {
     switch (widget.source) {
@@ -84,6 +86,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _muted = context.read<AppSettings>().muted;
     _items = List<VideoItem>.from(widget.items);
     _index = widget.initialIndex.clamp(0, _items.length - 1);
     _pageCtrl = PageController(initialPage: _index);
@@ -213,12 +216,14 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     }
     if (!mounted || seq != _seq) return;
 
-    final stream = detail.preferredStream ?? detail.bestStream;
+    final cap = context.read<AppSettings>().qualityCap;
+    final stream = PlaybackHelpers.pickStream(detail, cap) ?? detail.bestStream;
     if (stream == null) {
       setState(() => _pageLoading = false);
       _scheduleSkipToNext(index);
       return;
     }
+    _currentDetail = detail;
 
     final ctrl = VideoPlayerController.networkUrl(
       Uri.parse(stream.url),
@@ -241,6 +246,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     }
 
     _failStreak = 0;
+    _muted = context.read<AppSettings>().muted;
     ctrl.setVolume(_muted ? 0 : 1);
     final skip = context.read<AppSettings>().skipIntro;
     await PlaybackHelpers.skipIntro(ctrl, enabled: skip);
@@ -252,7 +258,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     setState(() {
       _pageLoading = false;
       _titleText = detail.title;
-      _totalTime = _fmt(ctrl.value.duration);
+      _totalTime = PlaybackHelpers.fmtDuration(ctrl.value.duration);
     });
     await ctrl.play();
     _startTimer();
@@ -296,14 +302,14 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     if (ctrl == null) return;
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(milliseconds: 400), (_) {
-      if (!ctrl.value.isInitialized) return;
+      if (!ctrl.value.isInitialized || _seeking) return;
       final pos = ctrl.value.position;
       final dur = ctrl.value.duration;
       if (dur.inMilliseconds <= 0) return;
       _slider.value =
           (pos.inMilliseconds / dur.inMilliseconds).clamp(0.0, 1.0);
-      _curTime.value = _fmt(pos);
-      final t = _fmt(dur);
+      _curTime.value = PlaybackHelpers.fmtDuration(pos);
+      final t = PlaybackHelpers.fmtDuration(dur);
       if (t != _totalTime && mounted) setState(() => _totalTime = t);
     });
   }
@@ -318,18 +324,60 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   void _seek(double v) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
-    c.seekTo(Duration(milliseconds: (c.value.duration.inMilliseconds * v).round()));
+    final ms = (c.value.duration.inMilliseconds * v).round();
+    c.seekTo(Duration(milliseconds: ms));
     _slider.value = v;
+    _curTime.value = PlaybackHelpers.fmtDuration(Duration(milliseconds: ms));
   }
 
-  String _fmt(Duration d) {
-    final h = d.inHours;
-    final m = d.inMinutes.remainder(60);
-    final s = d.inSeconds.remainder(60);
-    if (h > 0) {
-      return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  void _toggleMute() {
+    _muted = !_muted;
+    _controller?.setVolume(_muted ? 0 : 1);
+    context.read<AppSettings>().setMuted(_muted);
+    setState(() {});
+  }
+
+  void _showQualityPicker() {
+    final detail = _currentDetail;
+    if (detail == null || detail.streams.isEmpty) return;
+    final settings = context.read<AppSettings>();
+    final heights = <int>{0};
+    for (final s in detail.streams) {
+      if (s.height > 0) heights.add(s.height);
     }
-    return '$m:${s.toString().padLeft(2, '0')}';
+    final options = heights.toList()..sort();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('画质', style: TextStyle(color: Colors.white70)),
+                dense: true,
+              ),
+              for (final h in options)
+                ListTile(
+                  title: Text(
+                    h == 0 ? '自动' : '${h}p',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  trailing: settings.qualityCap == h
+                      ? const Icon(Icons.check, color: Color(0xFFFF6B35))
+                      : null,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await settings.setQualityCap(h);
+                    if (mounted) _playIndex(_index);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -418,28 +466,28 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
               ),
               Positioned(
                 right: 10,
-                bottom: 56,
+                bottom: 108,
                 child: SafeArea(
                   child: Material(
                     color: Colors.black54,
                     shape: const CircleBorder(),
                     child: InkWell(
                       customBorder: const CircleBorder(),
-                      onTap: () {
-                        _muted = !_muted;
-                        _controller?.setVolume(_muted ? 0 : 1);
-                        setState(() {});
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Icon(
-                          _muted ? Icons.volume_off : Icons.volume_up,
-                          color: Colors.white,
-                          size: 28,
-                        ),
+                      onTap: _showQualityPicker,
+                      child: const Padding(
+                        padding: EdgeInsets.all(10),
+                        child: Icon(Icons.high_quality,
+                            color: Colors.white, size: 22),
                       ),
                     ),
                   ),
+                ),
+              ),
+              Positioned(
+                right: 10,
+                bottom: 52,
+                child: SafeArea(
+                  child: FeedMuteButton(muted: _muted, onTap: _toggleMute),
                 ),
               ),
               Positioned(
@@ -447,40 +495,16 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                 right: 0,
                 bottom: 0,
                 child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        ValueListenableBuilder<String>(
-                          valueListenable: _curTime,
-                          builder: (_, t, __) => Text(
-                            t,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 10,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: ValueListenableBuilder<double>(
-                            valueListenable: _slider,
-                            builder: (_, v, __) => Slider(
-                              value: v.clamp(0.0, 1.0),
-                              activeColor: const Color(0xFFFF6B35),
-                              inactiveColor: Colors.white24,
-                              onChanged: _seek,
-                            ),
-                          ),
-                        ),
-                        Text(
-                          _totalTime,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: FeedProgressBar(
+                    slider: _slider,
+                    curTime: _curTime,
+                    totalTime: _totalTime,
+                    onChanged: _seek,
+                    onChangeStart: (_) => _seeking = true,
+                    onChangeEnd: (v) {
+                      _seek(v);
+                      _seeking = false;
+                    },
                   ),
                 ),
               ),

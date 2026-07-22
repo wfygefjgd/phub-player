@@ -17,8 +17,6 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
-  /// 热 | 亚 | X | 中 | 搜 — no IndexedStack: inactive tabs are disposed
-  /// so Android never keeps multiple ExoPlayer trees alive.
   void _openSettings() {
     showModalBottomSheet<void>(
       context: context,
@@ -61,6 +59,31 @@ class _HomeShellState extends State<HomeShell> {
                       value: settings.skipIntro,
                       onChanged: settings.setSkipIntro,
                     ),
+                    ListTile(
+                      title: const Text('默认画质',
+                          style: TextStyle(color: Colors.white)),
+                      subtitle: Text(
+                        settings.qualityLabel,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 12),
+                      ),
+                      trailing: DropdownButton<int>(
+                        value: settings.qualityCap,
+                        dropdownColor: const Color(0xFF2A2A2A),
+                        underline: const SizedBox.shrink(),
+                        style: const TextStyle(color: Colors.white),
+                        items: const [
+                          DropdownMenuItem(value: 0, child: Text('自动')),
+                          DropdownMenuItem(value: 360, child: Text('360p')),
+                          DropdownMenuItem(value: 480, child: Text('480p')),
+                          DropdownMenuItem(value: 720, child: Text('720p')),
+                          DropdownMenuItem(value: 1080, child: Text('1080p')),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) settings.setQualityCap(v);
+                        },
+                      ),
+                    ),
                   ],
                 );
               },
@@ -79,14 +102,22 @@ class _HomeShellState extends State<HomeShell> {
         fit: StackFit.expand,
         children: [
           _buildBody(),
+          // Below title / speed badge row so it is not covered
           Positioned(
             top: 0,
-            right: 4,
+            right: 6,
             child: SafeArea(
-              child: IconButton(
-                tooltip: '设置',
-                icon: const Icon(Icons.tune, color: Colors.white54, size: 22),
-                onPressed: _openSettings,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 40),
+                child: Material(
+                  color: Colors.black45,
+                  shape: const CircleBorder(),
+                  child: IconButton(
+                    tooltip: '设置',
+                    icon: const Icon(Icons.tune, color: Colors.white70, size: 20),
+                    onPressed: _openSettings,
+                  ),
+                ),
               ),
             ),
           ),
@@ -142,7 +173,6 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   Widget _buildBody() {
-    // Key by index so Flutter disposes previous feed completely.
     switch (_index) {
       case 0:
         return const VideoFeedScreen(
