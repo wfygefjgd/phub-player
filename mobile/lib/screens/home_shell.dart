@@ -66,12 +66,12 @@ class _HomeShellState extends State<HomeShell> {
           icon: Icon(Icons.local_fire_department_outlined),
           selectedIcon:
               Icon(Icons.local_fire_department, color: Color(0xFFFF6B35)),
-          label: '热闹',
+          label: '热',
         ),
         NavigationDestination(
           icon: Icon(Icons.public_outlined),
           selectedIcon: Icon(Icons.public, color: Color(0xFFFF6B35)),
-          label: '亚洲',
+          label: '亚',
         ),
         NavigationDestination(
           icon: Icon(Icons.play_circle_outline),
@@ -95,12 +95,12 @@ class _HomeShellState extends State<HomeShell> {
         icon: Icon(Icons.local_fire_department_outlined),
         selectedIcon:
             Icon(Icons.local_fire_department, color: Color(0xFFFF6B35)),
-        label: '热闹',
+        label: '热',
       ),
       NavigationDestination(
         icon: Icon(Icons.public_outlined),
         selectedIcon: Icon(Icons.public, color: Color(0xFFFF6B35)),
-        label: '亚洲',
+        label: '亚',
       ),
       NavigationDestination(
         icon: Icon(Icons.play_circle_outline),

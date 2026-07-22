@@ -297,7 +297,10 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         if (index == _currentIndex && _feedVisible && _autoPlay) {
           existing.controller!.play();
           _startProgressTimerForPage(index);
-          _setCurrentInfo(index);
+          _setCurrentInfo(
+            index,
+            playerDuration: existing.controller!.value.duration,
+          );
           final d = existing.detail;
           if (d != null) _translateTitleOnly(d.title);
         }
@@ -392,19 +395,22 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       return;
     }
     ctrl.setVolume(_muted ? 0 : 1);
-    if (index == _currentIndex && _feedVisible) {
-      ctrl.play();
-      _startProgressTimerForPage(index);
-    } else {
-      ctrl.pause(); // buffered but not playing yet
-    }
     page.ready = true;
     page.loading = false;
 
     if (!mounted) return;
     if (index == _currentIndex) {
-      _setCurrentInfo(index);
+      // Prefer player-reported duration (mitao often has no durationSec in API)
+      _setCurrentInfo(index, playerDuration: ctrl.value.duration);
       _translateTitleOnly(detail.title);
+      if (_feedVisible) {
+        ctrl.play();
+        _startProgressTimerForPage(index);
+      } else {
+        ctrl.pause();
+      }
+    } else {
+      ctrl.pause(); // buffered but not playing yet
     }
     setState(() {});
   }
@@ -448,15 +454,29 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _sliderValue.value =
           (pos.inMilliseconds / dur.inMilliseconds).clamp(0.0, 1.0);
       _currentTime.value = _fmtDuration(pos);
+      // Late duration (common for HLS / mitao): refresh total once known
+      if (dur.inMilliseconds > 0) {
+        final t = _fmtDuration(dur);
+        if (t != _totalTime && mounted) {
+          setState(() => _totalTime = t);
+        }
+      }
     });
   }
 
-  void _setCurrentInfo(int index) {
+  void _setCurrentInfo(int index, {Duration? playerDuration}) {
     final page = _pages[index];
     if (page == null || page.detail == null) return;
     final d = page.detail!;
-    _totalTime = _fmtDuration(
-        Duration(seconds: d.durationSec > 0 ? d.durationSec : 0));
+    var total = playerDuration;
+    if (total == null || total.inMilliseconds <= 0) {
+      final pd = page.controller?.value.duration;
+      if (pd != null && pd.inMilliseconds > 0) total = pd;
+    }
+    if (total == null || total.inMilliseconds <= 0) {
+      total = Duration(seconds: d.durationSec > 0 ? d.durationSec : 0);
+    }
+    _totalTime = _fmtDuration(total);
     _sliderValue.value = 0;
     _currentTime.value = '0:00';
     setState(() {
@@ -557,7 +577,10 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     if (newPage != null && newPage.ready && newPage.controller != null) {
       newPage.controller!.play();
       _startProgressTimerForPage(page);
-      _setCurrentInfo(page);
+      _setCurrentInfo(
+        page,
+        playerDuration: newPage.controller!.value.duration,
+      );
       final d = newPage.detail;
       if (d != null) _translateTitleOnly(d.title);
       WakelockPlus.enable();

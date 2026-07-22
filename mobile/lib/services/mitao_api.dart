@@ -184,9 +184,22 @@ class MitaoApi {
     }
 
     String title = '';
+    var durationSec = 0;
     final vd = data['vod_data'];
     if (vd is Map) {
       title = (vd['vod_name'] ?? '').toString();
+      durationSec = int.tryParse('${vd['vod_duration'] ?? 0}') ?? 0;
+      // sometimes "01:23:45" or "23:45"
+      if (durationSec <= 0) {
+        final ds = (vd['vod_duration'] ?? vd['duration'] ?? '').toString();
+        durationSec = _parseDurationText(ds);
+      }
+    }
+    if (durationSec <= 0) {
+      final dm = RegExp(r'vod_duration["\s:]+["' "'" r']?(\d+)').firstMatch(html);
+      if (dm != null) {
+        durationSec = int.tryParse(dm.group(1) ?? '') ?? 0;
+      }
     }
     if (title.isEmpty) {
       final tm = RegExp(r'<title>([^<]+)</title>', caseSensitive: false)
@@ -194,18 +207,30 @@ class MitaoApi {
       title = (tm?.group(1) ?? '视频').split('-').first.trim();
     }
 
-    final streams = <StreamQuality>[];
-    if (playUrl.contains('.m3u8') || playUrl.contains('m3u8')) {
-      streams.add(StreamQuality(width: 1280, height: 720, url: playUrl));
-    } else {
-      streams.add(StreamQuality(width: 1280, height: 720, url: playUrl));
-    }
+    final streams = <StreamQuality>[
+      StreamQuality(width: 1280, height: 720, url: playUrl),
+    ];
 
     return VideoDetail(
       url: url,
       title: title.isEmpty ? url : title,
-      durationSec: 0,
+      durationSec: durationSec,
       streams: streams,
     );
+  }
+
+  int _parseDurationText(String s) {
+    final t = s.trim();
+    if (t.isEmpty) return 0;
+    final n = int.tryParse(t);
+    if (n != null && n > 0) return n;
+    final parts = t.split(':').map((e) => int.tryParse(e) ?? 0).toList();
+    if (parts.length == 3) {
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    if (parts.length == 2) {
+      return parts[0] * 60 + parts[1];
+    }
+    return 0;
   }
 }
