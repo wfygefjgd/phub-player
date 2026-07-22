@@ -55,6 +55,25 @@ class MitaoApi {
     return '$base$path';
   }
 
+  /// Site search (keyword as-is; Chinese OK for this site).
+  Future<List<VideoItem>> search(String query, {int page = 1}) async {
+    final q = Uri.encodeComponent(query.trim());
+    if (q.isEmpty) return [];
+    // MacCMS search URL
+    final url = page <= 1
+        ? '$base/index.php/vod/search/wd/$q.html'
+        : '$base/index.php/vod/search/wd/$q/page/$page.html';
+    try {
+      final html = await _getHtml(url);
+      return _parseList(html, <String>{});
+    } catch (_) {
+      // alternate pattern
+      final alt = '$base/index.php/vod/search.html?wd=$q&page=$page';
+      final html = await _getHtml(alt);
+      return _parseList(html, <String>{});
+    }
+  }
+
   /// Random pages of 中文字幕 type list.
   Future<List<VideoItem>> fetchZhong({
     int limit = 40,

@@ -1,15 +1,10 @@
-import 'dart:io' show Platform;
-
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/video_item.dart';
-import '../services/download_service.dart';
 import '../services/phub_api.dart';
 import '../utils/http_headers.dart';
 
@@ -144,34 +139,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _muted = !_muted;
     _controller!.setVolume(_muted ? 0 : 1);
     setState(() {});
-  }
-
-  Future<void> _downloadCurrent() async {
-    if (kIsWeb || Platform.isIOS) return;
-    if (_current == null || _detail == null) return;
-    final url = _current!.url;
-    final title = _detail!.title;
-    final q = _current!.label;
-    final downloader = context.read<DownloadService>();
-    if (downloader.browserMode) {
-      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-      return;
-    }
-    final task = DownloadTask(
-      url: url,
-      quality: q,
-      headers: _httpHeaders,
-      title: title,
-    );
-    await downloader.enqueue(task);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('下载已开始: $title ($q)'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: const Color(0xFF2A2A2A),
-      ),
-    );
   }
 
   @override
@@ -348,17 +315,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ),
                       ],
                     ),
-                    if (!kIsWeb && !Platform.isIOS) ...[
-                      const SizedBox(height: 16),
-                      FilledButton.icon(
-                        icon: const Icon(Icons.download_rounded, size: 18),
-                        label: const Text('下载视频'),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFFFF6B35),
-                        ),
-                        onPressed: _downloadCurrent,
-                      ),
-                    ],
                   ],
                   const SizedBox(height: 24),
                   SelectableText(

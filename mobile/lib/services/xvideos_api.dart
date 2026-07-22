@@ -49,6 +49,18 @@ class XvideosApi {
     return res.data!;
   }
 
+  /// Keyword search (page starts at 0 on xvideos: p=0 is first page).
+  Future<List<VideoItem>> search(String query, {int page = 1}) async {
+    final q = Uri.encodeQueryComponent(query.trim());
+    if (q.isEmpty) return [];
+    final p = (page - 1).clamp(0, 999);
+    final url = p == 0
+        ? 'https://www.xvideos.com/?k=$q'
+        : 'https://www.xvideos.com/?k=$q&p=$p';
+    final html = await _getHtml(url);
+    return _parseList(html, <String>{});
+  }
+
   /// Random mix of home / asian keyword / best pages (like 热闹 regeneration).
   Future<List<VideoItem>> fetchFeed({
     int limit = 40,
