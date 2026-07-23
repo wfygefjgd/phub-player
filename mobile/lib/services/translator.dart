@@ -81,8 +81,19 @@ class Translator {
       );
       final url =
           'https://translate.googleapis.com/translate_a/single?client=gtx&sl=$from&tl=$to&dt=t&q=$encoded';
-      final res = await _dio.get(url);
-      final data = res.data;
+      // Must request JSON — AppHttpClient defaults to plain text.
+      final res = await _dio.get(
+        url,
+        options: Options(responseType: ResponseType.json),
+      );
+      dynamic data = res.data;
+      if (data is String) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {
+          return text;
+        }
+      }
       if (data is! List || data.isEmpty || data[0] is! List) return text;
       final buf = StringBuffer();
       for (final part in data[0] as List) {

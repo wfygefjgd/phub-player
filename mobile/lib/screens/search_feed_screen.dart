@@ -8,6 +8,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/video_item.dart';
 import '../services/mitao_api.dart';
 import '../services/phub_api.dart';
+import '../services/translator.dart';
 import '../services/xvideos_api.dart';
 import '../services/app_settings.dart';
 import '../services/player_chrome.dart';
@@ -276,12 +277,31 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       _titleText = detail.title;
       _totalTime = PlaybackHelpers.fmtDuration(ctrl.value.duration);
     });
+    // ignore: unawaited_futures
+    _translateTitleOnly(detail.title);
     await ctrl.play();
     _startTimer();
     WakelockPlus.enable();
     if (mounted) setState(() {});
 
     _prefetchDetail(index + 1);
+  }
+
+  Future<void> _translateTitleOnly(String title) async {
+    if (title.isEmpty) return;
+    if (RegExp(r'[\u4e00-\u9fff]').hasMatch(title)) {
+      if (mounted) setState(() => _titleText = title);
+      return;
+    }
+    try {
+      final zh = await context.read<Translator>().enToZh(title);
+      if (!mounted || zh.isEmpty) return;
+      setState(() => _titleText = zh);
+      final i = _index;
+      if (i >= 0 && i < _items.length && _items[i].title == title) {
+        _items[i] = _items[i].copyWith(title: zh);
+      }
+    } catch (_) {}
   }
 
   void _prefetchDetail(int index) {

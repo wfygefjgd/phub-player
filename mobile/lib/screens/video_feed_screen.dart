@@ -274,6 +274,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       if (list.isEmpty && isCold) {
         list = await _fetchBatch(isCold: false);
       }
+      final addedStart = _items.length;
       for (final item in list) {
         if (_seen.add(item.viewkey)) _items.add(item);
       }
@@ -285,6 +286,11 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
           _error = '$_feedLabel暂无内容，请检查网络或稍后重试';
         }
       });
+      // PH / X titles are English — batch translate after list load.
+      if (widget.kind != VideoFeedKind.zhong && _items.length > addedStart) {
+        // ignore: unawaited_futures
+        _translateItemsRange(addedStart);
+      }
       if (_active && _items.isNotEmpty && _controller == null) {
         _playIndex(_currentIndex.clamp(0, _items.length - 1));
       }
@@ -503,10 +509,47 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
 
   Future<void> _translateTitleOnly(String title) async {
     if (title.isEmpty) return;
+    // Already Chinese (e.g. 中 tab) — keep as-is.
+    if (RegExp(r'[\u4e00-\u9fff]').hasMatch(title)) {
+      if (mounted) setState(() => _titleText = title);
+      return;
+    }
     try {
       final zh = await context.read<Translator>().enToZh(title);
       if (!mounted || zh.isEmpty) return;
       setState(() => _titleText = zh);
+      // Also update list item so next swipe shows Chinese immediately.
+      final i = _currentIndex;
+      if (i >= 0 && i < _items.length && _items[i].title == title) {
+        _items[i] = _items[i].copyWith(title: zh);
+      }
+    } catch (_) {}
+  }
+
+  /// Batch-translate newly loaded English titles in the feed list.
+  Future<void> _translateItemsRange(int start) async {
+    if (start < 0 || start >= _items.length) return;
+    if (widget.kind == VideoFeedKind.zhong) return;
+    try {
+      final slice = _items.sublist(start);
+      final urls = slice.map((e) => e.url).toList();
+      final titles = slice.map((e) => e.title).toList();
+      final zh = await context.read<Translator>().batchEnToZh(titles);
+      if (!mounted) return;
+      setState(() {
+        for (var i = 0; i < zh.length; i++) {
+          final idx = start + i;
+          if (idx >= _items.length) break;
+          if (_items[idx].url != urls[i]) continue;
+          if (zh[i].isEmpty || zh[i] == titles[i]) continue;
+          _items[idx] = _items[idx].copyWith(title: zh[i]);
+          // Refresh on-screen title if this is the current video.
+          if (idx == _currentIndex &&
+              (_titleText == titles[i] || _titleText.isEmpty)) {
+            _titleText = zh[i];
+          }
+        }
+      });
     } catch (_) {}
   }
 
