@@ -155,33 +155,24 @@ class FeedCircleButton extends StatelessWidget {
   }
 }
 
-/// Right-side vertical stack: quality / mute (aligned centers).
+/// Right-side control: mute only (quality lives in top-right settings).
 /// Fullscreen lives under the title on the left.
 class FeedSideControls extends StatelessWidget {
   const FeedSideControls({
     super.key,
     required this.muted,
-    required this.onQuality,
     required this.onMute,
   });
 
   final bool muted;
-  final VoidCallback onQuality;
   final VoidCallback onMute;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        FeedCircleButton(icon: Icons.high_quality, onTap: onQuality),
-        const SizedBox(height: 12),
-        FeedCircleButton(
-          icon: muted ? Icons.volume_off : Icons.volume_up,
-          onTap: onMute,
-          size: 24,
-        ),
-      ],
+    return FeedCircleButton(
+      icon: muted ? Icons.volume_off : Icons.volume_up,
+      onTap: onMute,
+      size: 24,
     );
   }
 }

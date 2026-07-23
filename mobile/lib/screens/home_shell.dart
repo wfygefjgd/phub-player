@@ -3,8 +3,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../services/app_settings.dart';
 import '../services/player_chrome.dart';
+import '../widgets/player_settings_sheet.dart';
 import 'search_screen.dart';
 import 'video_feed_screen.dart';
 
@@ -19,55 +19,7 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
   void _openSettings() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
-            child: Consumer<AppSettings>(
-              builder: (_, settings, __) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 36,
-                      height: 4,
-                      margin: const EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const ListTile(
-                      title: Text('设置',
-                          style:
-                              TextStyle(color: Colors.white70, fontSize: 13)),
-                      dense: true,
-                    ),
-                    SwitchListTile(
-                      title: const Text('跳过片头约 15 秒',
-                          style: TextStyle(color: Colors.white)),
-                      subtitle: const Text(
-                        '跳过片头广告；短视频自动关闭。画质请在播放页右侧按钮切换。',
-                        style: TextStyle(color: Colors.white38, fontSize: 12),
-                      ),
-                      activeThumbColor: const Color(0xFFFF6B35),
-                      value: settings.skipIntro,
-                      onChanged: settings.setSkipIntro,
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
+    showPlayerSettingsSheet(context);
   }
 
   @override
@@ -80,7 +32,7 @@ class _HomeShellState extends State<HomeShell> {
         fit: StackFit.expand,
         children: [
           _buildBody(),
-          // Hide on search list tab (index 4); search player has its own gear.
+          // Hide on search list tab (index 4); player overlay has its own gear.
           if (!immersive && _index != 4)
             Positioned(
               top: 0,

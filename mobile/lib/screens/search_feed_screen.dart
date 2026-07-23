@@ -14,6 +14,7 @@ import '../services/app_settings.dart';
 import '../services/player_chrome.dart';
 import '../utils/http_headers.dart';
 import '../utils/playback_helpers.dart';
+import '../widgets/player_settings_sheet.dart';
 
 /// Which backend to use for detail / headers.
 enum SearchSource { ph, x, zhong }
@@ -64,12 +65,18 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   int? _prefetchingIndex;
   VideoDetail? _currentDetail;
   int _currentStreamHeight = 0;
+  /// Stall prompt: session-only quality for this item (not global).
+  int? _sessionQualityCap;
   int _stallTicks = 0;
   double _lastPosMs = 0;
   int _lastTickMs = 0;
   bool _stallPromptOpen = false;
   bool _stallPromptDismissedForItem = false;
+  int _stallArmedAfterMs = 0;
   PlayerChrome? _chrome;
+
+  int get _effectiveQualityCap =>
+      _sessionQualityCap ?? context.read<AppSettings>().qualityCap;
 
   Map<String, String> get _headers {
     switch (widget.source) {
@@ -136,10 +143,18 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
       _controller?.pause();
       WakelockPlus.disable();
+      _stallTicks = 0;
+      _stallPromptOpen = false;
+      _stallArmedAfterMs =
+          DateTime.now().millisecondsSinceEpoch + 5000;
     } else if (state == AppLifecycleState.resumed) {
+      _stallTicks = 0;
+      _stallArmedAfterMs =
+          DateTime.now().millisecondsSinceEpoch + 5000;
       _controller?.play();
       WakelockPlus.enable();
     }
@@ -218,6 +233,8 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     _currentStreamHeight = 0;
     _stallTicks = 0;
     _stallPromptDismissedForItem = false;
+    _stallArmedAfterMs =
+        DateTime.now().millisecondsSinceEpoch + 4000;
     _lastPosMs = 0;
     _lastTickMs = 0;
     _slider.value = 0;
@@ -261,7 +278,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       return;
     }
 
-    final cap = context.read<AppSettings>().qualityCap;
+    final cap = _effectiveQualityCap;
     final candidates = PlaybackHelpers.streamCandidates(detail, cap);
     if (candidates.isEmpty) {
       setState(() => _pageLoading = false);
@@ -404,7 +421,9 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
         final dPlayed = posMs - _lastPosMs;
         final isPlaying = ctrl.value.isPlaying;
         final nearEnd = posMs >= dur.inMilliseconds - 800;
-        if (isPlaying &&
+        final armed = now >= _stallArmedAfterMs;
+        if (armed &&
+            isPlaying &&
             !nearEnd &&
             dMs >= 150 &&
             dPlayed < 40 &&
@@ -413,7 +432,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
         } else if (dPlayed >= 80) {
           _stallTicks = 0;
         }
-        if (_stallTicks >= 10) {
+        if (_stallTicks >= 12) {
           _stallTicks = 0;
           // ignore: unawaited_futures
           _maybePromptLowerQuality();
@@ -431,6 +450,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
 
   Future<void> _maybePromptLowerQuality() async {
     if (!mounted || _stallPromptOpen || _stallPromptDismissedForItem) return;
+    if (!context.read<AppSettings>().promptOnStall) return;
     final detail = _currentDetail;
     if (detail == null || detail.streams.isEmpty) return;
     final curH = _currentStreamHeight;
@@ -452,7 +472,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
           title: const Text('播放较卡', style: TextStyle(color: Colors.white)),
           content: Text(
             '检测到卡顿。是否切换到更低清晰度 ${target.label}？\n'
-            '点「继续」将按当前画质继续播（可能仍卡）。',
+            '仅影响本条视频。点「继续」将按当前画质继续播（可能仍卡）。',
             style: const TextStyle(color: Colors.white70, height: 1.35),
           ),
           actions: [
@@ -469,9 +489,9 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       );
       if (!mounted) return;
       if (ok == true) {
-        await context.read<AppSettings>().setQualityCap(target.height);
+        _sessionQualityCap = target.height;
         if (mounted) {
-          PlaybackHelpers.toast(context, '正在切换到 ${target.label}');
+          PlaybackHelpers.toast(context, '正在切换到 ${target.label}（仅本条）');
           // ignore: unawaited_futures
           _playIndex(_index);
         }
@@ -481,6 +501,24 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     } finally {
       _stallPromptOpen = false;
     }
+  }
+
+  void _openPlayerSettings() {
+    final detail = _currentDetail;
+    final heights = <int>[];
+    if (detail != null) {
+      for (final s in detail.streams) {
+        if (s.height > 0) heights.add(s.height);
+      }
+    }
+    showPlayerSettingsSheet(
+      context,
+      qualityHeights: heights.isEmpty ? null : heights,
+      onQualityChanged: () {
+        _sessionQualityCap = null;
+        if (mounted) _playIndex(_index);
+      },
+    );
   }
 
   void _onPageChanged(int page) {
@@ -506,6 +544,9 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       _seeking = false;
       return;
     }
+    _stallTicks = 0;
+    _stallArmedAfterMs =
+        DateTime.now().millisecondsSinceEpoch + 3000;
     final durMs = c.value.duration.inMilliseconds;
     if (durMs <= 0) {
       _seeking = false;
@@ -539,48 +580,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     setState(() {});
   }
 
-  void _showQualityPicker() {
-    final detail = _currentDetail;
-    if (detail == null || detail.streams.isEmpty) return;
-    final settings = context.read<AppSettings>();
-    final heights = <int>{0};
-    for (final s in detail.streams) {
-      if (s.height > 0) heights.add(s.height);
-    }
-    final options = heights.toList()..sort();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const ListTile(
-                title: Text('画质', style: TextStyle(color: Colors.white70)),
-                dense: true,
-              ),
-              for (final h in options)
-                ListTile(
-                  title: Text(
-                    h == 0 ? '自动' : '${h}p',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  trailing: settings.qualityCap == h
-                      ? const Icon(Icons.check, color: Color(0xFFFF6B35))
-                      : null,
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await settings.setQualityCap(h);
-                    if (mounted) _playIndex(_index);
-                  },
-                ),
-            ],
-          ),
-        );
-      },
-    );
-  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -663,7 +663,23 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                   );
                 },
               ),
-              if (immersive)
+              if (immersive) ...[
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: SafeArea(
+                    child: Material(
+                      color: Colors.black45,
+                      shape: const CircleBorder(),
+                      child: IconButton(
+                        tooltip: '设置 / 画质',
+                        icon: const Icon(Icons.tune,
+                            color: Colors.white70, size: 20),
+                        onPressed: _openPlayerSettings,
+                      ),
+                    ),
+                  ),
+                ),
                 Positioned(
                   top: 8,
                   right: 8,
@@ -679,11 +695,22 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                       ),
                     ),
                   ),
-                )
-              else if (_controller != null || _pageLoading) ...[
+                ),
+                if (_controller != null || _pageLoading)
+                  Positioned(
+                    right: 10,
+                    bottom: 56,
+                    child: SafeArea(
+                      child: FeedSideControls(
+                        muted: _muted,
+                        onMute: _toggleMute,
+                      ),
+                    ),
+                  ),
+              ] else if (_controller != null || _pageLoading) ...[
                 Positioned(
                   left: 12,
-                  right: 12,
+                  right: 56,
                   top: 8,
                   child: SafeArea(
                     child: Text(
@@ -696,6 +723,25 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                         shadows: [
                           Shadow(color: Colors.black87, blurRadius: 4)
                         ],
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 0,
+                  right: 6,
+                  child: SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Material(
+                        color: Colors.black45,
+                        shape: const CircleBorder(),
+                        child: IconButton(
+                          tooltip: '设置 / 画质',
+                          icon: const Icon(Icons.tune,
+                              color: Colors.white70, size: 20),
+                          onPressed: _openPlayerSettings,
+                        ),
                       ),
                     ),
                   ),
@@ -719,7 +765,6 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                   child: SafeArea(
                     child: FeedSideControls(
                       muted: _muted,
-                      onQuality: _showQualityPicker,
                       onMute: _toggleMute,
                     ),
                   ),

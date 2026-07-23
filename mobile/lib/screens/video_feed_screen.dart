@@ -15,6 +15,7 @@ import '../services/feed_list_cache.dart';
 import '../services/player_chrome.dart';
 import '../utils/http_headers.dart';
 import '../utils/playback_helpers.dart';
+import '../widgets/player_settings_sheet.dart';
 
 enum VideoFeedKind {
   hot,
@@ -75,12 +76,19 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   VideoDetail? _currentDetail;
   /// Height of the stream currently playing (0 if unknown).
   int _currentStreamHeight = 0;
+  /// One-shot quality for current item only (stall accept); does not persist.
+  int? _sessionQualityCap;
   /// Stall detection for "try lower quality?" prompt (user must confirm).
   int _stallTicks = 0;
   bool _stallPromptOpen = false;
   bool _stallPromptDismissedForItem = false;
+  /// Ignore stall until this timestamp (ms since epoch).
+  int _stallArmedAfterMs = 0;
   PlayerChrome? _chrome;
   String get _cacheKey => widget.kind.name;
+
+  int get _effectiveQualityCap =>
+      _sessionQualityCap ?? context.read<AppSettings>().qualityCap;
 
   Map<String, String> get _httpHeaders {
     switch (widget.kind) {
@@ -180,10 +188,19 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
       _controller?.pause();
       WakelockPlus.disable();
+      // Background freezes progress — don't treat as stall when returning.
+      _stallTicks = 0;
+      _stallPromptOpen = false;
+      _stallArmedAfterMs =
+          DateTime.now().millisecondsSinceEpoch + 5000;
     } else if (state == AppLifecycleState.resumed && _active) {
+      _stallTicks = 0;
+      _stallArmedAfterMs =
+          DateTime.now().millisecondsSinceEpoch + 5000;
       _controller?.play();
       WakelockPlus.enable();
     }
@@ -378,6 +395,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     _currentStreamHeight = 0;
     _stallTicks = 0;
     _stallPromptDismissedForItem = false;
+    // Arm stall detection after intro window (~4s), avoids open-buffer false alarms.
+    _stallArmedAfterMs =
+        DateTime.now().millisecondsSinceEpoch + 4000;
     _sliderValue.value = 0;
     _currentTime.value = '0:00';
 
@@ -414,7 +434,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       return;
     }
 
-    final cap = context.read<AppSettings>().qualityCap;
+    final cap = _effectiveQualityCap;
     final candidates = PlaybackHelpers.streamCandidates(detail, cap);
     if (candidates.isEmpty) {
       setState(() => _pageLoading = false);
@@ -544,7 +564,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         // Do NOT auto-switch quality — only prompt; user must confirm.
         final isPlaying = ctrl.value.isPlaying;
         final nearEnd = posMs >= dur.inMilliseconds - 800;
-        if (isPlaying &&
+        final armed = now >= _stallArmedAfterMs;
+        if (armed &&
+            isPlaying &&
             !nearEnd &&
             dMs >= 150 &&
             dPlayed < 40 &&
@@ -553,7 +575,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         } else if (dPlayed >= 80) {
           _stallTicks = 0;
         }
-        if (_stallTicks >= 10) {
+        if (_stallTicks >= 12) {
           _stallTicks = 0;
           // ignore: unawaited_futures
           _maybePromptLowerQuality();
@@ -668,6 +690,10 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _seeking = false;
       return;
     }
+    // Cool down stall prompt after seek (buffer refill is normal).
+    _stallTicks = 0;
+    _stallArmedAfterMs =
+        DateTime.now().millisecondsSinceEpoch + 3000;
     final durMs = c.value.duration.inMilliseconds;
     if (durMs <= 0) {
       _seeking = false;
@@ -705,8 +731,10 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   }
 
   /// Detected lag: ask user before lowering quality. Dismiss = keep current.
+  /// Accept only applies to **this item** (session cap), not global settings.
   Future<void> _maybePromptLowerQuality() async {
     if (!mounted || _stallPromptOpen || _stallPromptDismissedForItem) return;
+    if (!context.read<AppSettings>().promptOnStall) return;
     final detail = _currentDetail;
     if (detail == null || detail.streams.isEmpty) return;
     final curH = _currentStreamHeight;
@@ -728,7 +756,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
           title: const Text('播放较卡', style: TextStyle(color: Colors.white)),
           content: Text(
             '检测到卡顿。是否切换到更低清晰度 ${target.label}？\n'
-            '点「继续」将按当前画质继续播（可能仍卡）。',
+            '仅影响本条视频。点「继续」将按当前画质继续播（可能仍卡）。',
             style: const TextStyle(color: Colors.white70, height: 1.35),
           ),
           actions: [
@@ -745,9 +773,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       );
       if (!mounted) return;
       if (ok == true) {
-        await context.read<AppSettings>().setQualityCap(target.height);
+        _sessionQualityCap = target.height;
         if (mounted) {
-          PlaybackHelpers.toast(context, '正在切换到 ${target.label}');
+          PlaybackHelpers.toast(context, '正在切换到 ${target.label}（仅本条）');
           // ignore: unawaited_futures
           _playIndex(_currentIndex);
         }
@@ -760,45 +788,21 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     }
   }
 
-  void _showQualityPicker() {
+  void _openPlayerSettings() {
     final detail = _currentDetail;
-    if (detail == null || detail.streams.isEmpty) return;
-    final settings = context.read<AppSettings>();
-    final heights = <int>{0};
-    for (final s in detail.streams) {
-      if (s.height > 0) heights.add(s.height);
+    final heights = <int>[];
+    if (detail != null) {
+      for (final s in detail.streams) {
+        if (s.height > 0) heights.add(s.height);
+      }
     }
-    final options = heights.toList()..sort();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const ListTile(
-                title: Text('画质', style: TextStyle(color: Colors.white70)),
-                dense: true,
-              ),
-              for (final h in options)
-                ListTile(
-                  title: Text(
-                    h == 0 ? '自动' : '${h}p',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  trailing: settings.qualityCap == h
-                      ? const Icon(Icons.check, color: Color(0xFFFF6B35))
-                      : null,
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await settings.setQualityCap(h);
-                    if (mounted) _playIndex(_currentIndex);
-                  },
-                ),
-            ],
-          ),
-        );
+    showPlayerSettingsSheet(
+      context,
+      qualityHeights: heights.isEmpty ? null : heights,
+      onQualityChanged: () {
+        // Manual quality from settings is global preference + re-open current.
+        _sessionQualityCap = null;
+        if (mounted) _playIndex(_currentIndex);
       },
     );
   }
@@ -920,8 +924,24 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                   );
                 },
               ),
-              // Fullscreen: video only (+ tiny exit control)
-              if (immersive)
+              // Fullscreen: settings top-left, exit top-right; mute stays bottom-right.
+              if (immersive) ...[
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: SafeArea(
+                    child: Material(
+                      color: Colors.black45,
+                      shape: const CircleBorder(),
+                      child: IconButton(
+                        tooltip: '设置 / 画质',
+                        icon: const Icon(Icons.tune,
+                            color: Colors.white70, size: 20),
+                        onPressed: _openPlayerSettings,
+                      ),
+                    ),
+                  ),
+                ),
                 Positioned(
                   top: 8,
                   right: 8,
@@ -937,10 +957,21 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                       ),
                     ),
                   ),
-                )
-              else if (_controller != null || _pageLoading) ...[
+                ),
+                if (_controller != null || _pageLoading)
+                  Positioned(
+                    right: 10,
+                    bottom: 56,
+                    child: SafeArea(
+                      child: FeedSideControls(
+                        muted: _muted,
+                        onMute: _toggleMute,
+                      ),
+                    ),
+                  ),
+              ] else if (_controller != null || _pageLoading) ...[
                 _buildTopBar(),
-                // Fullscreen under title, left; vertical center ~ settings gear
+                // Fullscreen under title, left
                 Positioned(
                   left: 10,
                   top: 0,
@@ -954,13 +985,33 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                     ),
                   ),
                 ),
+                // Settings (quality etc.) top-right on player
+                Positioned(
+                  top: 0,
+                  right: 6,
+                  child: SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 40),
+                      child: Material(
+                        color: Colors.black45,
+                        shape: const CircleBorder(),
+                        child: IconButton(
+                          tooltip: '设置',
+                          icon: const Icon(Icons.tune,
+                              color: Colors.white70, size: 20),
+                          onPressed: _openPlayerSettings,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                // Mute only on right side
                 Positioned(
                   right: 10,
                   bottom: 56,
                   child: SafeArea(
                     child: FeedSideControls(
                       muted: _muted,
-                      onQuality: _showQualityPicker,
                       onMute: _toggleMute,
                     ),
                   ),
