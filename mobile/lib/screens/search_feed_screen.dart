@@ -10,6 +10,7 @@ import '../services/mitao_api.dart';
 import '../services/phub_api.dart';
 import '../services/xvideos_api.dart';
 import '../services/app_settings.dart';
+import '../services/player_chrome.dart';
 import '../utils/http_headers.dart';
 import '../utils/playback_helpers.dart';
 
@@ -96,6 +97,9 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
 
   @override
   void dispose() {
+    try {
+      context.read<PlayerChrome>().ensurePortraitChrome();
+    } catch (_) {}
     WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();
     _slider.dispose();
@@ -108,6 +112,11 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     } catch (_) {}
     WakelockPlus.disable();
     super.dispose();
+  }
+
+  Future<void> _toggleFullscreen() async {
+    await context.read<PlayerChrome>().toggleFullscreen();
+    if (mounted) setState(() {});
   }
 
   @override
@@ -382,134 +391,188 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Colors.black54,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: Text(widget.title, style: const TextStyle(fontSize: 16)),
-      ),
-      body: GestureDetector(
-        onTap: () {
-          final c = _controller;
-          if (c == null || !c.value.isInitialized) return;
-          if (c.value.isPlaying) {
-            c.pause();
-          } else {
-            c.play();
-          }
-        },
-        onLongPressStart: (_) => _controller?.setPlaybackSpeed(3.0),
-        onLongPressEnd: (_) => _controller?.setPlaybackSpeed(1.0),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            PageView.builder(
-              controller: _pageCtrl,
-              scrollDirection: Axis.vertical,
-              itemCount: _items.length,
-              onPageChanged: _onPageChanged,
-              itemBuilder: (_, i) {
-                if (i == _index &&
-                    _controller != null &&
-                    _controller!.value.isInitialized) {
-                  return Center(
-                    child: AspectRatio(
-                      aspectRatio: _controller!.value.aspectRatio,
-                      child: VideoPlayer(_controller!),
+    final immersive = context.watch<PlayerChrome>().immersive;
+
+    return PopScope(
+      canPop: !immersive,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && immersive) {
+          context.read<PlayerChrome>().exitFullscreen();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        extendBodyBehindAppBar: true,
+        appBar: immersive
+            ? null
+            : AppBar(
+                backgroundColor: Colors.black54,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                title: Text(widget.title, style: const TextStyle(fontSize: 16)),
+              ),
+        body: GestureDetector(
+          onTap: () {
+            final c = _controller;
+            if (c == null || !c.value.isInitialized) return;
+            if (c.value.isPlaying) {
+              c.pause();
+            } else {
+              c.play();
+            }
+          },
+          onLongPressStart: (_) => _controller?.setPlaybackSpeed(3.0),
+          onLongPressEnd: (_) => _controller?.setPlaybackSpeed(1.0),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              PageView.builder(
+                controller: _pageCtrl,
+                scrollDirection: Axis.vertical,
+                itemCount: _items.length,
+                onPageChanged: _onPageChanged,
+                itemBuilder: (_, i) {
+                  if (i == _index &&
+                      _controller != null &&
+                      _controller!.value.isInitialized) {
+                    return ColoredBox(
+                      color: Colors.black,
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: _controller!.value.aspectRatio,
+                          child: VideoPlayer(_controller!),
+                        ),
+                      ),
+                    );
+                  }
+                  final thumb = _items[i].thumb;
+                  return Container(
+                    color: const Color(0xFF1A1A1A),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (thumb != null && thumb.isNotEmpty)
+                          Image.network(
+                            thumb,
+                            fit: BoxFit.cover,
+                            headers: AppHttpHeaders.forMediaUrl(thumb),
+                            errorBuilder: (_, __, ___) =>
+                                const SizedBox.shrink(),
+                          ),
+                        if (i == _index && _pageLoading)
+                          const Center(
+                            child: CircularProgressIndicator(
+                              color: Color(0xFFFF6B35),
+                            ),
+                          ),
+                      ],
                     ),
                   );
-                }
-                final thumb = _items[i].thumb;
-                return Container(
-                  color: const Color(0xFF1A1A1A),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (thumb != null && thumb.isNotEmpty)
-                        Image.network(
-                          thumb,
-                          fit: BoxFit.cover,
-                          headers: AppHttpHeaders.forMediaUrl(thumb),
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                        ),
-                      if (i == _index && _pageLoading)
-                        const Center(
-                          child: CircularProgressIndicator(
-                            color: Color(0xFFFF6B35),
-                          ),
-                        ),
-                    ],
-                  ),
-                );
-              },
-            ),
-            if (_controller != null || _pageLoading) ...[
-              Positioned(
-                left: 12,
-                right: 56,
-                bottom: 56,
-                child: SafeArea(
-                  child: Text(
-                    _titleText,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
+                },
+              ),
+              if (immersive)
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: SafeArea(
+                    child: Material(
+                      color: Colors.black45,
+                      shape: const CircleBorder(),
+                      child: IconButton(
+                        tooltip: '退出全屏',
+                        icon: const Icon(Icons.fullscreen_exit,
+                            color: Colors.white70, size: 22),
+                        onPressed: _toggleFullscreen,
+                      ),
                     ),
                   ),
-                ),
-              ),
-              Positioned(
-                right: 10,
-                bottom: 108,
-                child: SafeArea(
-                  child: Material(
-                    color: Colors.black54,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: _showQualityPicker,
-                      child: const Padding(
-                        padding: EdgeInsets.all(10),
-                        child: Icon(Icons.high_quality,
-                            color: Colors.white, size: 22),
+                )
+              else if (_controller != null || _pageLoading) ...[
+                Positioned(
+                  left: 12,
+                  right: 56,
+                  bottom: 56,
+                  child: SafeArea(
+                    child: Text(
+                      _titleText,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        shadows: [
+                          Shadow(color: Colors.black87, blurRadius: 4)
+                        ],
                       ),
                     ),
                   ),
                 ),
-              ),
-              Positioned(
-                right: 10,
-                bottom: 52,
-                child: SafeArea(
-                  child: FeedMuteButton(muted: _muted, onTap: _toggleMute),
-                ),
-              ),
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: SafeArea(
-                  child: FeedProgressBar(
-                    slider: _slider,
-                    curTime: _curTime,
-                    totalTime: _totalTime,
-                    onChanged: _seek,
-                    onChangeStart: (_) => _seeking = true,
-                    onChangeEnd: (v) {
-                      _seek(v);
-                      _seeking = false;
-                    },
+                Positioned(
+                  right: 10,
+                  bottom: 164,
+                  child: SafeArea(
+                    child: Material(
+                      color: Colors.black54,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _toggleFullscreen,
+                        child: const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: Icon(Icons.fullscreen,
+                              color: Colors.white, size: 22),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                Positioned(
+                  right: 10,
+                  bottom: 108,
+                  child: SafeArea(
+                    child: Material(
+                      color: Colors.black54,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _showQualityPicker,
+                        child: const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: Icon(Icons.high_quality,
+                              color: Colors.white, size: 22),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 10,
+                  bottom: 52,
+                  child: SafeArea(
+                    child: FeedMuteButton(muted: _muted, onTap: _toggleMute),
+                  ),
+                ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: SafeArea(
+                    child: FeedProgressBar(
+                      slider: _slider,
+                      curTime: _curTime,
+                      totalTime: _totalTime,
+                      onChanged: _seek,
+                      onChangeStart: (_) => _seeking = true,
+                      onChangeEnd: (v) {
+                        _seek(v);
+                        _seeking = false;
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

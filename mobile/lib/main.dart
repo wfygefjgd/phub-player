@@ -6,6 +6,7 @@ import 'screens/home_shell.dart';
 import 'services/app_settings.dart';
 import 'services/mitao_api.dart';
 import 'services/phub_api.dart';
+import 'services/player_chrome.dart';
 import 'services/translator.dart';
 import 'services/xvideos_api.dart';
 
@@ -31,6 +32,7 @@ class PhubApp extends StatelessWidget {
         Provider(create: (_) => MitaoApi()),
         Provider(create: (_) => Translator()),
         ChangeNotifierProvider.value(value: settings),
+        ChangeNotifierProvider(create: (_) => PlayerChrome()),
       ],
       child: MaterialApp(
         title: 'PHUB Player',
