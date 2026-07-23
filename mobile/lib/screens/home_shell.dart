@@ -80,7 +80,8 @@ class _HomeShellState extends State<HomeShell> {
         fit: StackFit.expand,
         children: [
           _buildBody(),
-          if (!immersive)
+          // Hide on search list tab (index 4); search player has its own gear.
+          if (!immersive && _index != 4)
             Positioned(
               top: 0,
               right: 6,

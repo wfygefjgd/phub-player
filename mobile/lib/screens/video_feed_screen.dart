@@ -511,24 +511,52 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     return 600;
   }
 
-  /// Drag preview only — no player seek (avoids hitching).
+  /// Drag/tap preview only — never touch the player (prevents snap-back).
   void _onSeekPreview(double v) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
-    final pos = (c.value.duration.inMilliseconds * v).round();
-    _sliderValue.value = v;
+    final durMs = c.value.duration.inMilliseconds;
+    if (durMs <= 0) return;
+    final pos = (durMs * v).round();
+    _sliderValue.value = v.clamp(0.0, 1.0);
     _currentTime.value =
         PlaybackHelpers.fmtDuration(Duration(milliseconds: pos));
   }
 
-  void _onSeekCommit(double v) {
+  /// Seek after drag/tap ends; keep [_seeking] until player position settles.
+  Future<void> _onSeekCommit(double v) async {
     final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
-    final pos = (c.value.duration.inMilliseconds * v).round();
-    _sliderValue.value = v;
+    if (c == null || !c.value.isInitialized) {
+      _seeking = false;
+      return;
+    }
+    final durMs = c.value.duration.inMilliseconds;
+    if (durMs <= 0) {
+      _seeking = false;
+      return;
+    }
+    final target = v.clamp(0.0, 1.0);
+    final posMs = (durMs * target).round();
+    _seeking = true;
+    _sliderValue.value = target;
     _currentTime.value =
-        PlaybackHelpers.fmtDuration(Duration(milliseconds: pos));
-    c.seekTo(Duration(milliseconds: pos));
+        PlaybackHelpers.fmtDuration(Duration(milliseconds: posMs));
+    try {
+      await c.seekTo(Duration(milliseconds: posMs));
+      // Brief hold so progress timer doesn't overwrite with stale position
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (!mounted || !identical(c, _controller)) return;
+      final p = c.value.position;
+      final d = c.value.duration;
+      if (d.inMilliseconds > 0) {
+        _sliderValue.value =
+            (p.inMilliseconds / d.inMilliseconds).clamp(0.0, 1.0);
+        _currentTime.value = PlaybackHelpers.fmtDuration(p);
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) _seeking = false;
+    }
   }
 
   void _toggleMute() {
@@ -718,13 +746,26 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                 )
               else if (_controller != null || _pageLoading) ...[
                 _buildTopBar(),
+                // Fullscreen under title, left; vertical center ~ settings gear
+                Positioned(
+                  left: 10,
+                  top: 0,
+                  child: SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 40),
+                      child: FeedCircleButton(
+                        icon: Icons.fullscreen,
+                        onTap: _toggleFullscreen,
+                      ),
+                    ),
+                  ),
+                ),
                 Positioned(
                   right: 10,
                   bottom: 56,
                   child: SafeArea(
                     child: FeedSideControls(
                       muted: _muted,
-                      onFullscreen: _toggleFullscreen,
                       onQuality: _showQualityPicker,
                       onMute: _toggleMute,
                     ),
@@ -740,10 +781,12 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                       curTime: _currentTime,
                       totalTime: _totalTime,
                       onChanged: _onSeekPreview,
-                      onChangeStart: (_) => _seeking = true,
+                      onChangeStart: (_) {
+                        _seeking = true;
+                      },
                       onChangeEnd: (v) {
+                        // ignore: unawaited_futures
                         _onSeekCommit(v);
-                        _seeking = false;
                       },
                     ),
                   ),
@@ -756,7 +799,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     );
   }
 
-  /// Title + speed badge on the same vertical band.
+  /// Title + speed on one row (leave left gap for fullscreen under title).
   Widget _buildTopBar() {
     final title = _titleText.isNotEmpty
         ? _titleText
@@ -764,7 +807,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     return Positioned(
       left: 10,
       right: 10,
-      top: 16,
+      top: 8,
       child: SafeArea(
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,

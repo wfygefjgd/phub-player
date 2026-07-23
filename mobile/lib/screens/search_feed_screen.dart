@@ -333,18 +333,43 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   void _onSeekPreview(double v) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
-    final ms = (c.value.duration.inMilliseconds * v).round();
-    _slider.value = v;
+    final durMs = c.value.duration.inMilliseconds;
+    if (durMs <= 0) return;
+    final ms = (durMs * v).round();
+    _slider.value = v.clamp(0.0, 1.0);
     _curTime.value = PlaybackHelpers.fmtDuration(Duration(milliseconds: ms));
   }
 
-  void _onSeekCommit(double v) {
+  Future<void> _onSeekCommit(double v) async {
     final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
-    final ms = (c.value.duration.inMilliseconds * v).round();
-    _slider.value = v;
+    if (c == null || !c.value.isInitialized) {
+      _seeking = false;
+      return;
+    }
+    final durMs = c.value.duration.inMilliseconds;
+    if (durMs <= 0) {
+      _seeking = false;
+      return;
+    }
+    final target = v.clamp(0.0, 1.0);
+    final ms = (durMs * target).round();
+    _seeking = true;
+    _slider.value = target;
     _curTime.value = PlaybackHelpers.fmtDuration(Duration(milliseconds: ms));
-    c.seekTo(Duration(milliseconds: ms));
+    try {
+      await c.seekTo(Duration(milliseconds: ms));
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (!mounted || !identical(c, _controller)) return;
+      final p = c.value.position;
+      final d = c.value.duration;
+      if (d.inMilliseconds > 0) {
+        _slider.value = (p.inMilliseconds / d.inMilliseconds).clamp(0.0, 1.0);
+        _curTime.value = PlaybackHelpers.fmtDuration(p);
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) _seeking = false;
+    }
   }
 
   void _toggleMute() {
@@ -498,8 +523,8 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
               else if (_controller != null || _pageLoading) ...[
                 Positioned(
                   left: 12,
-                  right: 64,
-                  bottom: 56,
+                  right: 12,
+                  top: 8,
                   child: SafeArea(
                     child: Text(
                       _titleText,
@@ -516,12 +541,24 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                   ),
                 ),
                 Positioned(
+                  left: 10,
+                  top: 0,
+                  child: SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 40),
+                      child: FeedCircleButton(
+                        icon: Icons.fullscreen,
+                        onTap: _toggleFullscreen,
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
                   right: 10,
                   bottom: 56,
                   child: SafeArea(
                     child: FeedSideControls(
                       muted: _muted,
-                      onFullscreen: _toggleFullscreen,
                       onQuality: _showQualityPicker,
                       onMute: _toggleMute,
                     ),
@@ -537,10 +574,12 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                       curTime: _curTime,
                       totalTime: _totalTime,
                       onChanged: _onSeekPreview,
-                      onChangeStart: (_) => _seeking = true,
+                      onChangeStart: (_) {
+                        _seeking = true;
+                      },
                       onChangeEnd: (v) {
+                        // ignore: unawaited_futures
                         _onSeekCommit(v);
-                        _seeking = false;
                       },
                     ),
                   ),

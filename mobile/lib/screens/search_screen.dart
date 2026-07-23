@@ -322,22 +322,40 @@ class _SearchScreenState extends State<SearchScreen>
                   child: TextField(
                     controller: _controller,
                     focusNode: _focus,
-                    style: const TextStyle(color: Colors.white),
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
                     textInputAction: TextInputAction.search,
                     onSubmitted: (_) => _runAll(),
+                    // Keep caret/text inside the rounded field
+                    clipBehavior: Clip.hardEdge,
                     decoration: InputDecoration(
                       hintText: '关键词（三源并行）',
-                      hintStyle: const TextStyle(color: Colors.grey),
+                      hintStyle: const TextStyle(color: Colors.white38),
                       filled: true,
                       fillColor: const Color(0xFF2A2A2A),
+                      isDense: true,
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(24),
                         borderSide: BorderSide.none,
                       ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: const BorderSide(
+                          color: Color(0x55FF6B35),
+                          width: 1.2,
+                        ),
+                      ),
                       contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14,
+                        horizontal: 18,
                         vertical: 12,
                       ),
+                      prefixIcon: const Icon(Icons.search,
+                          color: Colors.white38, size: 20),
+                      prefixIconConstraints:
+                          const BoxConstraints(minWidth: 40, minHeight: 40),
                     ),
                   ),
                 ),
@@ -346,12 +364,15 @@ class _SearchScreenState extends State<SearchScreen>
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFFFF6B35),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
+                      horizontal: 18,
+                      vertical: 12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
                     ),
                   ),
                   onPressed: _runAll,
-                  child: const Text('搜索'),
+                  child: const Text('搜'),
                 ),
               ],
             ),
