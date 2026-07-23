@@ -73,6 +73,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   int? _prefetchingIndex;
   bool _seeking = false;
   VideoDetail? _currentDetail;
+  PlayerChrome? _chrome;
   String get _cacheKey => widget.kind.name;
 
   Map<String, String> get _httpHeaders {
@@ -110,6 +111,12 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _chrome ??= context.read<PlayerChrome>();
+  }
+
+  @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
@@ -141,9 +148,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         ),
       );
     }
-    // Best-effort restore portrait chrome when leaving tab
+    // Do not use context after dispose; cached chrome only
     try {
-      context.read<PlayerChrome>().ensurePortraitChrome();
+      _chrome?.ensurePortraitChrome();
     } catch (_) {}
     WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();

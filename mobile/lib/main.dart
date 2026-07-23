@@ -12,11 +12,12 @@ import 'services/xvideos_api.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Do NOT lock orientation before runApp — Android 15 + forced-landscape
-  // emulators crash if portrait-only is applied during Activity create.
-  // Orientation is applied after first frame in [PhubApp].
+  // No orientation / SystemUI calls before runApp — Android 15 can crash
+  // when the Activity is still creating under forced landscape.
   final settings = AppSettings();
-  await settings.load();
+  try {
+    await settings.load();
+  } catch (_) {}
   runApp(PhubApp(settings: settings));
 }
 
@@ -33,15 +34,19 @@ class _PhubAppState extends State<PhubApp> {
   @override
   void initState() {
     super.initState();
+    // Defer chrome until UI is up (avoids A15 startup races).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // After first frame only — safe on Android 12–15
-      PlayerChrome.applyAllOrientations();
-      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        systemNavigationBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.light,
-        systemNavigationBarIconBrightness: Brightness.light,
-      ));
+      Future<void>.delayed(const Duration(milliseconds: 300), () {
+        PlayerChrome.applyAllOrientations();
+        try {
+          SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            systemNavigationBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.light,
+            systemNavigationBarIconBrightness: Brightness.light,
+          ));
+        } catch (_) {}
+      });
     });
   }
 

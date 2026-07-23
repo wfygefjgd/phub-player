@@ -62,6 +62,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   final Map<int, VideoDetail> _detailCache = {};
   int? _prefetchingIndex;
   VideoDetail? _currentDetail;
+  PlayerChrome? _chrome;
 
   Map<String, String> get _headers {
     switch (widget.source) {
@@ -84,6 +85,12 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _chrome ??= context.read<PlayerChrome>();
+  }
+
+  @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
@@ -98,7 +105,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   @override
   void dispose() {
     try {
-      context.read<PlayerChrome>().ensurePortraitChrome();
+      _chrome?.ensurePortraitChrome();
     } catch (_) {}
     WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();
