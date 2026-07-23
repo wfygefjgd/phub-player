@@ -490,7 +490,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
               else if (_controller != null || _pageLoading) ...[
                 Positioned(
                   left: 12,
-                  right: 56,
+                  right: 64,
                   bottom: 56,
                   child: SafeArea(
                     child: Text(
@@ -509,47 +509,14 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                 ),
                 Positioned(
                   right: 10,
-                  bottom: 164,
+                  bottom: 56,
                   child: SafeArea(
-                    child: Material(
-                      color: Colors.black54,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: _toggleFullscreen,
-                        child: const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: Icon(Icons.fullscreen,
-                              color: Colors.white, size: 22),
-                        ),
-                      ),
+                    child: FeedSideControls(
+                      muted: _muted,
+                      onFullscreen: _toggleFullscreen,
+                      onQuality: _showQualityPicker,
+                      onMute: _toggleMute,
                     ),
-                  ),
-                ),
-                Positioned(
-                  right: 10,
-                  bottom: 108,
-                  child: SafeArea(
-                    child: Material(
-                      color: Colors.black54,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: _showQualityPicker,
-                        child: const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: Icon(Icons.high_quality,
-                              color: Colors.white, size: 22),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 10,
-                  bottom: 52,
-                  child: SafeArea(
-                    child: FeedMuteButton(muted: _muted, onTap: _toggleMute),
                   ),
                 ),
                 Positioned(

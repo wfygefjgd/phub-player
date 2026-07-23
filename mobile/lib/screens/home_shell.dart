@@ -53,37 +53,12 @@ class _HomeShellState extends State<HomeShell> {
                       title: const Text('跳过片头约 10 秒',
                           style: TextStyle(color: Colors.white)),
                       subtitle: const Text(
-                        '跳过片头广告；短视频自动关闭',
+                        '跳过片头广告；短视频自动关闭。画质请在播放页右侧按钮切换。',
                         style: TextStyle(color: Colors.white38, fontSize: 12),
                       ),
                       activeThumbColor: const Color(0xFFFF6B35),
                       value: settings.skipIntro,
                       onChanged: settings.setSkipIntro,
-                    ),
-                    ListTile(
-                      title: const Text('默认画质',
-                          style: TextStyle(color: Colors.white)),
-                      subtitle: Text(
-                        settings.qualityLabel,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 12),
-                      ),
-                      trailing: DropdownButton<int>(
-                        value: settings.qualityCap,
-                        dropdownColor: const Color(0xFF2A2A2A),
-                        underline: const SizedBox.shrink(),
-                        style: const TextStyle(color: Colors.white),
-                        items: const [
-                          DropdownMenuItem(value: 0, child: Text('自动')),
-                          DropdownMenuItem(value: 360, child: Text('360p')),
-                          DropdownMenuItem(value: 480, child: Text('480p')),
-                          DropdownMenuItem(value: 720, child: Text('720p')),
-                          DropdownMenuItem(value: 1080, child: Text('1080p')),
-                        ],
-                        onChanged: (v) {
-                          if (v != null) settings.setQualityCap(v);
-                        },
-                      ),
                     ),
                   ],
                 );

@@ -707,51 +707,17 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                   ),
                 )
               else if (_controller != null || _pageLoading) ...[
-                _buildTitleOverlay(),
-                _buildSpeedBadge(),
+                _buildTopBar(),
                 Positioned(
                   right: 10,
-                  bottom: 164,
+                  bottom: 56,
                   child: SafeArea(
-                    child: Material(
-                      color: Colors.black54,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: _toggleFullscreen,
-                        child: const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: Icon(Icons.fullscreen,
-                              color: Colors.white, size: 22),
-                        ),
-                      ),
+                    child: FeedSideControls(
+                      muted: _muted,
+                      onFullscreen: _toggleFullscreen,
+                      onQuality: _showQualityPicker,
+                      onMute: _toggleMute,
                     ),
-                  ),
-                ),
-                Positioned(
-                  right: 10,
-                  bottom: 108,
-                  child: SafeArea(
-                    child: Material(
-                      color: Colors.black54,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: _showQualityPicker,
-                        child: const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: Icon(Icons.high_quality,
-                              color: Colors.white, size: 22),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 10,
-                  bottom: 52,
-                  child: SafeArea(
-                    child: FeedMuteButton(muted: _muted, onTap: _toggleMute),
                   ),
                 ),
                 Positioned(
@@ -780,50 +746,51 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     );
   }
 
-  Widget _buildTitleOverlay() {
+  /// Title + speed badge on the same vertical band.
+  Widget _buildTopBar() {
+    final title = _titleText.isNotEmpty
+        ? _titleText
+        : (_currentIndex < _items.length ? _items[_currentIndex].title : '');
     return Positioned(
-      left: 8,
-      top: 18,
-      right: _speedLabel.isNotEmpty ? 100 : 8,
+      left: 10,
+      right: 10,
+      top: 16,
       child: SafeArea(
-        child: Text(
-          _titleText.isNotEmpty
-              ? _titleText
-              : (_currentIndex < _items.length
-                  ? _items[_currentIndex].title
-                  : ''),
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 13,
-            shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
-          ),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSpeedBadge() {
-    if (_speedLabel.isEmpty) return const SizedBox.shrink();
-    return Positioned(
-      right: 8,
-      top: 4,
-      child: SafeArea(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: BoxDecoration(
-            color: Colors.black45,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Text(
-            _speedLabel,
-            style: const TextStyle(
-              color: Color(0xFF00E676),
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  shadows: [Shadow(color: Colors.black87, blurRadius: 4)],
+                ),
+              ),
             ),
-          ),
+            if (_speedLabel.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black45,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  _speedLabel,
+                  style: const TextStyle(
+                    color: Color(0xFF00E676),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

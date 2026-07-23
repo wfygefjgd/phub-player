@@ -53,34 +53,71 @@ class PlaybackHelpers {
   }
 }
 
-/// Circular mute control used on feeds.
-class FeedMuteButton extends StatelessWidget {
-  const FeedMuteButton({
+/// Circular side control — fixed size so a column of buttons shares one center line.
+class FeedCircleButton extends StatelessWidget {
+  const FeedCircleButton({
     super.key,
-    required this.muted,
+    required this.icon,
     required this.onTap,
+    this.size = 22,
   });
 
-  final bool muted;
+  final IconData icon;
   final VoidCallback onTap;
+  final double size;
+
+  static const double box = 48;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black54,
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Icon(
-            muted ? Icons.volume_off : Icons.volume_up,
-            color: Colors.white,
-            size: 28,
+    return SizedBox(
+      width: box,
+      height: box,
+      child: Material(
+        color: Colors.black54,
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Center(
+            child: Icon(icon, color: Colors.white, size: size),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Right-side vertical stack: fullscreen / quality / mute (aligned centers).
+class FeedSideControls extends StatelessWidget {
+  const FeedSideControls({
+    super.key,
+    required this.muted,
+    required this.onFullscreen,
+    required this.onQuality,
+    required this.onMute,
+  });
+
+  final bool muted;
+  final VoidCallback onFullscreen;
+  final VoidCallback onQuality;
+  final VoidCallback onMute;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FeedCircleButton(icon: Icons.fullscreen, onTap: onFullscreen),
+        const SizedBox(height: 12),
+        FeedCircleButton(icon: Icons.high_quality, onTap: onQuality),
+        const SizedBox(height: 12),
+        FeedCircleButton(
+          icon: muted ? Icons.volume_off : Icons.volume_up,
+          onTap: onMute,
+          size: 24,
+        ),
+      ],
     );
   }
 }
