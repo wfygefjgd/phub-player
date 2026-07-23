@@ -284,15 +284,16 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       await ctrl.dispose();
       return;
     }
-    _controller = ctrl;
+    final VideoPlayerController player = ctrl!;
+    _controller = player;
     setState(() {
       _pageLoading = false;
       _titleText = detail.title;
-      _totalTime = PlaybackHelpers.fmtDuration(ctrl.value.duration);
+      _totalTime = PlaybackHelpers.fmtDuration(player.value.duration);
     });
     // ignore: unawaited_futures
     _translateTitleOnly(detail.title);
-    await ctrl.play();
+    await player.play();
     _startTimer();
     WakelockPlus.enable();
     if (mounted) setState(() {});

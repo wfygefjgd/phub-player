@@ -5,6 +5,14 @@
 
 ---
 
+## [1.6.5] — 修复 CI 编译失败
+
+### 修复
+- Android：`VideoPlayerController?` 空安全编译错误（清晰度降级循环赋值后 analyzer 不提升）
+- iOS CI：`CODE_SIGNING_ALLOWED=NO`（`--no-codesign` 仍要求 Development Team 的问题）
+
+---
+
 ## [1.6.4] — 稳妥优化（不删功能）
 
 ### 保留全部现有功能，仅增强稳定性 / 性能

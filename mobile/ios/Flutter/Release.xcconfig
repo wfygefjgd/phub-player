@@ -1,1 +1,6 @@
 #include "Generated.xcconfig"
+
+// Sideload / CI: unsigned device builds (flutter build ios --no-codesign)
+CODE_SIGNING_ALLOWED=NO
+CODE_SIGNING_REQUIRED=NO
+CODE_SIGN_IDENTITY=
