@@ -1,0 +1,232 @@
+name: Build & Release APK+IPA
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: pub get
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Build APK (release)
+        working-directory: mobile
+        run: flutter build apk --release
+
+      - name: Rename APK
+        working-directory: mobile
+        run: |
+          mkdir -p build/dist
+          cp -f build/app/outputs/flutter-apk/app-release.apk \
+            build/dist/PHUB-Player-v1.6.1-Android.apk
+          sha256sum build/dist/PHUB-Player-v1.6.1-Android.apk | tee build/dist/SHA256-Android.txt
+          ls -lh build/dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            mobile/build/dist/PHUB-Player-v1.6.1-Android.apk
+            mobile/build/dist/SHA256-Android.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: pub get
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Build iOS release (no codesign)
+        working-directory: mobile
+        run: flutter build ios --release --no-codesign
+
+      - name: Package sideload IPA
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          SRC="build/ios/iphoneos/Runner.app"
+          test -d "$SRC"
+          test -f "$SRC/Runner"
+
+          STAGE="/tmp/phub_ipa_$$"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/Payload"
+          /usr/bin/ditto -V --norsrc --noextattr --noqtn "$SRC" "$STAGE/Payload/Runner.app"
+
+          find "$STAGE/Payload/Runner.app" -type l -print0 | while IFS= read -r -d '' link; do
+            target=$(readlink "$link" || true)
+            if [ -n "$target" ]; then
+              dir=$(dirname "$link")
+              if [ -e "$dir/$target" ]; then
+                rm -f "$link"
+                /usr/bin/ditto "$dir/$target" "$link"
+              elif [ -e "$target" ]; then
+                rm -f "$link"
+                /usr/bin/ditto "$target" "$link"
+              else
+                rm -f "$link"
+              fi
+            fi
+          done
+
+          APP="$STAGE/Payload/Runner.app"
+          xattr -cr "$APP" || true
+          chmod +x "$APP/Runner" || true
+          [ -f "$APP/Frameworks/Flutter.framework/Flutter" ] && chmod +x "$APP/Frameworks/Flutter.framework/Flutter"
+          [ -f "$APP/Frameworks/App.framework/App" ] && chmod +x "$APP/Frameworks/App.framework/App"
+
+          thin_arm64() {
+            local bin="$1"
+            [ -f "$bin" ] || return 0
+            local info
+            info=$(lipo -info "$bin" 2>/dev/null || true)
+            if echo "$info" | grep -q "Architectures in the fat file" && echo "$info" | grep -q arm64; then
+              lipo -thin arm64 "$bin" -output "${bin}.thin"
+              mv "${bin}.thin" "$bin"
+              chmod +x "$bin"
+            fi
+          }
+          thin_arm64 "$APP/Runner"
+          thin_arm64 "$APP/Frameworks/Flutter.framework/Flutter"
+          thin_arm64 "$APP/Frameworks/App.framework/App"
+
+          if find "$APP" -type l | grep -q .; then
+            echo "ERROR symlinks remain"
+            find "$APP" -type l
+            exit 1
+          fi
+
+          mkdir -p build/dist
+          IPA="build/dist/PHUB-Player-v1.6.1-iOS.ipa"
+          python3 <<PY
+          import os, zipfile
+          stage = "$STAGE"
+          ipa = "$IPA"
+          root = os.path.join(stage, "Payload")
+          with zipfile.ZipFile(ipa, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+              for dirpath, dirnames, filenames in os.walk(root):
+                  dirnames.sort()
+                  filenames.sort()
+                  rel_dir = os.path.relpath(dirpath, stage).replace("\\\\", "/")
+                  if rel_dir and rel_dir != ".":
+                      entry = rel_dir.rstrip("/") + "/"
+                      zinfo = zipfile.ZipInfo(entry)
+                      zinfo.external_attr = (0o755 << 16) | 0x10
+                      zf.writestr(zinfo, b"")
+                  for name in filenames:
+                      full = os.path.join(dirpath, name)
+                      if os.path.islink(full):
+                          continue
+                      arc = os.path.relpath(full, stage).replace("\\\\", "/")
+                      zinfo = zipfile.ZipInfo.from_file(full, arc)
+                      if os.access(full, os.X_OK) or name in ("Runner", "Flutter", "App") or name.endswith(".dylib"):
+                          zinfo.external_attr = (0o755 << 16)
+                      else:
+                          zinfo.external_attr = (0o644 << 16)
+                      zinfo.compress_type = zipfile.ZIP_DEFLATED
+                      with open(full, "rb") as f:
+                          zf.writestr(zinfo, f.read())
+          print("wrote", ipa, os.path.getsize(ipa))
+          PY
+          sha256sum "$IPA" | tee build/dist/SHA256-iOS.txt
+          ls -lh build/dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: |
+            mobile/build/dist/PHUB-Player-v1.6.1-iOS.ipa
+            mobile/build/dist/SHA256-iOS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -ls
+
+      - name: Upload assets to GitHub Release v1.6.1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APK=$(find artifacts -name 'PHUB-Player-v1.6.1-Android.apk' | head -1)
+          IPA=$(find artifacts -name 'PHUB-Player-v1.6.1-iOS.ipa' | head -1)
+          SHA_A=$(find artifacts -name 'SHA256-Android.txt' | head -1)
+          SHA_I=$(find artifacts -name 'SHA256-iOS.txt' | head -1)
+          test -f "$APK"
+          test -f "$IPA"
+          # ensure release exists
+          if ! gh release view v1.6.1 --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create v1.6.1 --repo "${{ github.repository }}" \
+              --title "v1.6.1 — 播放器默认 + 双模式 + 可下载包" \
+              --notes "构建中…"
+          fi
+          gh release upload v1.6.1 \
+            "$APK" \
+            "$IPA" \
+            ${SHA_A:+"$SHA_A"} \
+            ${SHA_I:+"$SHA_I"} \
+            --repo "${{ github.repository }}" \
+            --clobber
+          gh release edit v1.6.1 --repo "${{ github.repository }}" \
+            --title "v1.6.1 — 播放器默认 + 双模式（含安装包）" \
+            --notes "$(cat <<'EOF'
+          ## 更新说明 (v1.6.1)
+
+          ### 下载
+          - **Android**：`PHUB-Player-v1.6.1-Android.apk`（debug 签名，侧载安装）
+          - **iOS**：`PHUB-Player-v1.6.1-iOS.ipa`（**未签名**，需 Sideloadly / 全能签 / TrollStore 等自签）
+
+          ### 变更
+          - 默认启动 **视频播放器**
+          - 可切换 **隐私浏览器**（设置 / 浏览器顶栏；完全退出后生效）
+          - 全量擦除仅浏览器模式
+          - 列表加载更快（约 5 页、并发 3）
+          - 统一 Dio / UA
+
+          ### 使用
+          - 需系统 VPN 访问源站
+          - Android 15 相关：关 Impeller、不全屏强横屏
+
+          ### 源码
+          仓库 master，版本 `1.6.1+16`
+          EOF
+          )"
