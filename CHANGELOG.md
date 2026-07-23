@@ -5,17 +5,25 @@
 
 ---
 
-## [1.6.1] — 优化（源码，待打包）
+## [1.6.2] — 纠正产品身份（源码）
+
+### 重要
+- **应用名固定为 PHUB Player**（iOS `CFBundleDisplayName`、文档、CI 发布名）
+- **移除误并入的「隐私浏览器」入口与相关 UI**（那是另一个项目）
+- 仅保留视频播放器主路径
+
+### 仍保留的 1.6.1 优化
+- 统一 Dio / UA
+- Feed 减负（约 5 页、并发 3）
+- Android 15：关 Impeller、不全屏强横屏
+
+---
+
+## [1.6.1] — 优化（曾误把隐私浏览器并进；已由 1.6.2 纠正）
 
 ### 通用
-- **双入口**：默认启动 **播放器**；设置可切到 **隐私浏览器**（需重启生效，双向可切）。
-- **启动擦除仅浏览器模式**：播放器不再 `wipeOnLaunch`，设置/画质等得以保留。
-- **统一 Dio**：`AppHttpClient` + `AppHttpHeaders`，三源 API / 翻译共用工厂。
-- **Feed 减负**：列表默认最多试 **5** 页、有限并发 3，首屏更快、少 403。
-- **发布**：自用继续 **debug 签名** 即可，不强制正式证书（见文末说明）。
-
-### Android / iOS
-- 无单独平台破坏性变更；Impeller 关闭与安卓不全屏强横屏策略保持。
+- 列表更快、统一网络层等（见上）
+- ~~双入口隐私浏览器~~ → **1.6.2 已移除**
 
 ---
 
@@ -38,20 +46,9 @@
 
 ---
 
-## [1.6.0] — 源码当前（git `f5a12d3`）
+## [1.6.0] — 历史提交（git `f5a12d3`，已纠正）
 
-**主题：** Extreme privacy browser（偏 iOS 侧载 / 强清理）
-
-### 变更
-- 入口改为隐私浏览器壳（`PrivacyBrowserApp` + `flutter_inappwebview`）。
-- 启动执行 `PrivacyEngine.wipeOnLaunch()`：清 Cookie / Web 缓存 / SharedPreferences / 应用目录等。
-- 增加 `privacy_browser/*`、原生通道 `privacy_browser/engine`（如 Android `nuclearWipe` / `exitApp`）。
-- 增加 GitHub Actions：`.github/workflows/ios-ipa.yml`。
-- `pubspec`：`version: 1.6.0+15`，描述改为 Privacy Browser。
-
-### 说明
-- 播放器相关源码（`phub_api`、feeds、search 等）仍在仓库中，但**默认启动路径已不是视频主页**。
-- 桌面目录下**尚未看到** `PHUB-Player-v1.6.0-*.apk/ipa` 成品（以你本机文件为准）。
+曾短暂把「隐私浏览器」入口合入本仓库（**误**）。**1.6.2 起本仓库恢复为纯 PHUB Player。**
 
 ---
 

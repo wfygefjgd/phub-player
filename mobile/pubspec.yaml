@@ -1,7 +1,7 @@
 name: phub_player
-description: PHUB Player + optional Privacy Browser (Android/iOS sideload)
+description: PHUB Player — video player for Android/iOS sideload
 publish_to: "none"
-version: 1.6.1+16
+version: 1.6.2+17
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -18,8 +18,6 @@ dependencies:
   provider: ^6.1.2
   url_launcher: ^6.3.2
   shared_preferences: ^2.5.5
-  flutter_inappwebview: ^6.1.5
-  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:

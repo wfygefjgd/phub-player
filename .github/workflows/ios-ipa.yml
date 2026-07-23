@@ -40,7 +40,7 @@ jobs:
           test -f "$SRC/Runner"
           test -f "$SRC/Info.plist"
 
-          STAGE="/tmp/privacy_ipa_stage_$$"
+          STAGE="/tmp/phub_ipa_stage_$$"
           rm -rf "$STAGE"
           mkdir -p "$STAGE/Payload"
 
@@ -93,12 +93,12 @@ jobs:
             exit 1
           fi
 
-          IPA_OUT="/tmp/Privacy-Browser-iOS.ipa"
+          IPA_OUT="/tmp/PHUB-Player-iOS.ipa"
           rm -f "$IPA_OUT"
           python3 <<PY
           import os, zipfile
           stage = "$STAGE"
-          ipa = "/tmp/Privacy-Browser-iOS.ipa"
+          ipa = "/tmp/PHUB-Player-iOS.ipa"
           root = os.path.join(stage, "Payload")
           assert os.path.isdir(root)
           with zipfile.ZipFile(ipa, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
@@ -130,12 +130,12 @@ jobs:
           print("wrote", ipa, os.path.getsize(ipa))
           PY
 
-          ls -lh /tmp/Privacy-Browser-iOS.ipa
-          file /tmp/Privacy-Browser-iOS.ipa
+          ls -lh /tmp/PHUB-Player-iOS.ipa
+          file /tmp/PHUB-Player-iOS.ipa
 
           python3 <<'PY'
           import zipfile, os
-          p = "/tmp/Privacy-Browser-iOS.ipa"
+          p = "/tmp/PHUB-Player-iOS.ipa"
           assert os.path.getsize(p) > 3_000_000
           with open(p, "rb") as f:
               assert f.read(2) == b"PK"
@@ -152,13 +152,12 @@ jobs:
           PY
 
           mkdir -p build/ipa_dist
-          cp -f /tmp/Privacy-Browser-iOS.ipa build/ipa_dist/Privacy-Browser-iOS.ipa
-          cp -f build/ipa_dist/Privacy-Browser-iOS.ipa build/ipa_dist/PHUB-Player-iOS.ipa
+          cp -f /tmp/PHUB-Player-iOS.ipa build/ipa_dist/PHUB-Player-iOS.ipa
           python3 - <<'PY'
           import os, hashlib
-          p = "build/ipa_dist/Privacy-Browser-iOS.ipa"
+          p = "build/ipa_dist/PHUB-Player-iOS.ipa"
           h = hashlib.sha256(open(p,"rb").read()).hexdigest()
-          open("build/ipa_dist/SHA256.txt","w").write(h + "  Privacy-Browser-iOS.ipa\n")
+          open("build/ipa_dist/SHA256.txt","w").write(h + "  PHUB-Player-iOS.ipa\n")
           print(h, os.path.getsize(p))
           PY
           ls -la build/ipa_dist/
@@ -166,9 +165,8 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Privacy-Browser-iOS
+          name: PHUB-Player-iOS
           path: |
-            mobile/build/ipa_dist/Privacy-Browser-iOS.ipa
             mobile/build/ipa_dist/PHUB-Player-iOS.ipa
             mobile/build/ipa_dist/SHA256.txt
           if-no-files-found: error
@@ -177,15 +175,15 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: privacy-browser-v${{ github.run_number }}
-          name: 隐私浏览器 iOS (侧载) #${{ github.run_number }}
+          tag_name: phub-player-ios-v${{ github.run_number }}
+          name: PHUB Player iOS (侧载) #${{ github.run_number }}
           body: |
-            ## 隐私浏览器 — 未签名 IPA（自签名 / 侧载）
+            ## PHUB Player — 未签名 IPA（自签名 / 侧载）
 
             适用：全能签、Sideloadly、AltStore、TrollStore 等自签名安装。
 
             ### 文件
-            - `Privacy-Browser-iOS.ipa` — 主包
+            - `PHUB-Player-iOS.ipa` — 主包
             - `SHA256.txt` — 校验
 
             ### 安装提示
@@ -194,9 +192,9 @@ jobs:
             3. 安装到设备后信任证书（设置 → 通用 → VPN与设备管理）
 
             Bundle ID: `com.phub.player.phubPlayer`
-            显示名: 隐私浏览器
+            显示名: PHUB Player
           files: |
-            mobile/build/ipa_dist/Privacy-Browser-iOS.ipa
+            mobile/build/ipa_dist/PHUB-Player-iOS.ipa
             mobile/build/ipa_dist/SHA256.txt
           draft: false
           prerelease: false

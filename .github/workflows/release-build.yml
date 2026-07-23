@@ -38,16 +38,18 @@ jobs:
         working-directory: mobile
         run: |
           mkdir -p build/dist
+          VER=$(grep '^version:' pubspec.yaml | head -1 | sed 's/version: //;s/+.*//')
           cp -f build/app/outputs/flutter-apk/app-release.apk \
-            build/dist/PHUB-Player-v1.6.1-Android.apk
-          sha256sum build/dist/PHUB-Player-v1.6.1-Android.apk | tee build/dist/SHA256-Android.txt
+            "build/dist/PHUB-Player-v${VER}-Android.apk"
+          shasum -a 256 "build/dist/PHUB-Player-v${VER}-Android.apk" | tee build/dist/SHA256-Android.txt
           ls -lh build/dist/
+          echo "VER=$VER" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
           path: |
-            mobile/build/dist/PHUB-Player-v1.6.1-Android.apk
+            mobile/build/dist/*.apk
             mobile/build/dist/SHA256-Android.txt
           if-no-files-found: error
           retention-days: 30
@@ -78,6 +80,8 @@ jobs:
           SRC="build/ios/iphoneos/Runner.app"
           test -d "$SRC"
           test -f "$SRC/Runner"
+          VER=$(grep '^version:' pubspec.yaml | head -1 | sed 's/version: //;s/+.*//')
+          echo "VER=$VER" >> "$GITHUB_ENV"
 
           STAGE="/tmp/phub_ipa_$$"
           rm -rf "$STAGE"
@@ -128,7 +132,7 @@ jobs:
           fi
 
           mkdir -p build/dist
-          IPA="build/dist/PHUB-Player-v1.6.1-iOS.ipa"
+          IPA="build/dist/PHUB-Player-v${VER}-iOS.ipa"
           python3 <<PY
           import os, zipfile
           stage = "$STAGE"
@@ -166,7 +170,7 @@ jobs:
         with:
           name: ios-ipa
           path: |
-            mobile/build/dist/PHUB-Player-v1.6.1-iOS.ipa
+            mobile/build/dist/*.ipa
             mobile/build/dist/SHA256-iOS.txt
           if-no-files-found: error
           retention-days: 30
@@ -182,51 +186,59 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f -ls
 
-      - name: Upload assets to GitHub Release v1.6.1
+      - name: Upload assets to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          APK=$(find artifacts -name 'PHUB-Player-v1.6.1-Android.apk' | head -1)
-          IPA=$(find artifacts -name 'PHUB-Player-v1.6.1-iOS.ipa' | head -1)
-          SHA_A=$(find artifacts -name 'SHA256-Android.txt' | head -1)
-          SHA_I=$(find artifacts -name 'SHA256-iOS.txt' | head -1)
+          APK=$(find artifacts -name 'PHUB-Player-*-Android.apk' | head -1)
+          IPA=$(find artifacts -name 'PHUB-Player-*-iOS.ipa' | head -1)
+          SHA_A=$(find artifacts -name 'SHA256-Android.txt' | head -1 || true)
+          SHA_I=$(find artifacts -name 'SHA256-iOS.txt' | head -1 || true)
           test -f "$APK"
           test -f "$IPA"
-          # ensure release exists
-          if ! gh release view v1.6.1 --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release create v1.6.1 --repo "${{ github.repository }}" \
-              --title "v1.6.1 — 播放器默认 + 双模式 + 可下载包" \
-              --notes "构建中…"
-          fi
-          gh release upload v1.6.1 \
-            "$APK" \
-            "$IPA" \
-            ${SHA_A:+"$SHA_A"} \
-            ${SHA_I:+"$SHA_I"} \
-            --repo "${{ github.repository }}" \
-            --clobber
-          gh release edit v1.6.1 --repo "${{ github.repository }}" \
-            --title "v1.6.1 — 播放器默认 + 双模式（含安装包）" \
-            --notes "$(cat <<'EOF'
-          ## 更新说明 (v1.6.1)
+          VER=$(basename "$APK" | sed -n 's/PHUB-Player-v\(.*\)-Android.apk/\1/p')
+          TAG="v${VER}"
 
-          ### 下载
-          - **Android**：`PHUB-Player-v1.6.1-Android.apk`（debug 签名，侧载安装）
-          - **iOS**：`PHUB-Player-v1.6.1-iOS.ipa`（**未签名**，需 Sideloadly / 全能签 / TrollStore 等自签）
+          NOTES=$(cat <<EOF
+          ## 下载
 
-          ### 变更
-          - 默认启动 **视频播放器**
-          - 可切换 **隐私浏览器**（设置 / 浏览器顶栏；完全退出后生效）
-          - 全量擦除仅浏览器模式
-          - 列表加载更快（约 5 页、并发 3）
-          - 统一 Dio / UA
+          | 平台 | 文件 | 说明 |
+          |------|------|------|
+          | **Android** | \`PHUB-Player-v${VER}-Android.apk\` | 可直接安装（debug 签名，自用侧载） |
+          | **iOS** | \`PHUB-Player-v${VER}-iOS.ipa\` | **未签名**，需 Sideloadly / 全能签 / TrollStore 等自签 |
+
+          ## 更新说明 (v${VER})
+
+          ### 产品
+          - 应用名：**PHUB Player**（仅播放器，不是隐私浏览器）
+          - 默认启动视频流（热 / 亚 / X / 中 / 搜）
+
+          ### 性能 / 工程
+          - 列表加载：抓取页数上限约 5，并发 3
+          - 统一 Dio / UA（三源 API + 翻译）
+          - Android 15：关 Impeller；不全屏强横屏
 
           ### 使用
           - 需系统 VPN 访问源站
-          - Android 15 相关：关 Impeller、不全屏强横屏
+          - 自用 debug 签名即可
 
           ### 源码
-          仓库 master，版本 `1.6.1+16`
+          https://github.com/wfygefjgd/phub-player
           EOF
-          )"
+          )
+
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "${{ github.repository }}" \
+              --title "v${VER} — PHUB Player（含安装包）" \
+              --notes "$NOTES"
+          else
+            gh release edit "$TAG" --repo "${{ github.repository }}" \
+              --title "v${VER} — PHUB Player（含安装包）" \
+              --notes "$NOTES"
+          fi
+
+          ARGS=("$APK" "$IPA")
+          [ -n "${SHA_A:-}" ] && [ -f "$SHA_A" ] && ARGS+=("$SHA_A")
+          [ -n "${SHA_I:-}" ] && [ -f "$SHA_I" ] && ARGS+=("$SHA_I")
+          gh release upload "$TAG" "${ARGS[@]}" --repo "${{ github.repository }}" --clobber
