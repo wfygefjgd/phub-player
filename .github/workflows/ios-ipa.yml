@@ -8,6 +8,9 @@ on:
       - 'mobile/**'
       - '.github/workflows/ios-ipa.yml'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-14
@@ -28,7 +31,7 @@ jobs:
         working-directory: mobile
         run: flutter build ios --release --no-codesign
 
-      - name: Package compatible IPA (no symlink zip issues)
+      - name: Package sideload IPA (unsigned)
         working-directory: mobile
         run: |
           set -euo pipefail
@@ -37,18 +40,15 @@ jobs:
           test -f "$SRC/Runner"
           test -f "$SRC/Info.plist"
 
-          STAGE="/tmp/phub_ipa_stage_$$"
+          STAGE="/tmp/privacy_ipa_stage_$$"
           rm -rf "$STAGE"
           mkdir -p "$STAGE/Payload"
 
-          # Copy app; resolve symlinks into real files (全能签 unzip 常不吃 symlink)
           /usr/bin/ditto -V --norsrc --noextattr --noqtn "$SRC" "$STAGE/Payload/Runner.app"
-          # If any symlink remains, materialize
           find "$STAGE/Payload/Runner.app" -type l -print0 | while IFS= read -r -d '' link; do
             target=$(readlink "$link" || true)
             if [ -n "$target" ]; then
               dir=$(dirname "$link")
-              # absolute resolve
               if [ -e "$dir/$target" ]; then
                 rm -f "$link"
                 /usr/bin/ditto "$dir/$target" "$link"
@@ -68,7 +68,6 @@ jobs:
           [ -f "$APP/Frameworks/Flutter.framework/Flutter" ] && chmod +x "$APP/Frameworks/Flutter.framework/Flutter"
           [ -f "$APP/Frameworks/App.framework/App" ] && chmod +x "$APP/Frameworks/App.framework/App"
 
-          # Thin to arm64 only
           thin_arm64() {
             local bin="$1"
             [ -f "$bin" ] || return 0
@@ -88,54 +87,39 @@ jobs:
             thin_arm64 "$f" || true
           done
 
-          # Confirm no symlinks left
           if find "$APP" -type l | grep -q .; then
             echo "ERROR: symlinks still present:"
             find "$APP" -type l
             exit 1
           fi
 
-          # Zip with Python for max ZIP-tool compatibility (no symlink, standard local headers)
-          IPA_OUT="/tmp/PHUB-Player-iOS.ipa"
+          IPA_OUT="/tmp/Privacy-Browser-iOS.ipa"
           rm -f "$IPA_OUT"
-          python3 <<'PY'
-          import os, zipfile, stat
-          stage = os.environ.get("STAGE")
-          # STAGE not exported; hardcode from shell via write
-          PY
-          export STAGE
           python3 <<PY
-          import os, zipfile, stat
+          import os, zipfile
           stage = "$STAGE"
-          ipa = "/tmp/PHUB-Player-iOS.ipa"
+          ipa = "/tmp/Privacy-Browser-iOS.ipa"
           root = os.path.join(stage, "Payload")
           assert os.path.isdir(root)
-          # ZIP_DEFLATED, allowZip64, strict timestamps
           with zipfile.ZipFile(ipa, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
               for dirpath, dirnames, filenames in os.walk(root):
-                  # stable order
                   dirnames.sort()
                   filenames.sort()
                   rel_dir = os.path.relpath(dirpath, stage).replace("\\\\", "/")
                   if rel_dir == ".":
                       rel_dir = ""
-                  # directory entry
                   if rel_dir:
                       entry = rel_dir.replace("\\\\", "/").rstrip("/") + "/"
-                      # only add Payload/ and subdirs once via walk
                       zinfo = zipfile.ZipInfo(entry)
                       zinfo.external_attr = (0o755 << 16) | 0x10
                       zf.writestr(zinfo, b"")
                   for name in filenames:
                       full = os.path.join(dirpath, name)
                       arc = os.path.relpath(full, stage).replace("\\\\", "/")
-                      # skip any accidental symlink
                       if os.path.islink(full):
                           print("skip link", full)
                           continue
                       zinfo = zipfile.ZipInfo.from_file(full, arc)
-                      # force unix perms
-                      mode = os.stat(full).st_mode
                       if os.access(full, os.X_OK) or name in ("Runner", "Flutter", "App") or name.endswith(".dylib"):
                           zinfo.external_attr = (0o755 << 16)
                       else:
@@ -146,52 +130,76 @@ jobs:
           print("wrote", ipa, os.path.getsize(ipa))
           PY
 
-          ls -lh /tmp/PHUB-Player-iOS.ipa
-          file /tmp/PHUB-Player-iOS.ipa
+          ls -lh /tmp/Privacy-Browser-iOS.ipa
+          file /tmp/Privacy-Browser-iOS.ipa
 
           python3 <<'PY'
-          import zipfile, os, sys
-          p = "/tmp/PHUB-Player-iOS.ipa"
-          assert p.endswith(".ipa")
+          import zipfile, os
+          p = "/tmp/Privacy-Browser-iOS.ipa"
           assert os.path.getsize(p) > 3_000_000
           with open(p, "rb") as f:
               assert f.read(2) == b"PK"
           with zipfile.ZipFile(p) as z:
-              # test CRC of every member (catches bad local headers)
               bad = z.testzip()
               assert bad is None, f"bad crc: {bad}"
               names = z.namelist()
           print("entries", len(names))
-          for n in names[:20]:
-              print(" ", n)
           assert "Payload/Runner.app/Info.plist" in names
           assert "Payload/Runner.app/Runner" in names
           tops = {n.split("/")[0] for n in names if n}
           assert tops == {"Payload"}, tops
-          # no symlink flag entries ideally
           print("ZIP testzip OK")
           PY
 
           mkdir -p build/ipa_dist
-          cp -f /tmp/PHUB-Player-iOS.ipa build/ipa_dist/PHUB-Player-iOS.ipa
-          ls -la build/ipa_dist/
-          # also produce .zip copy with same bytes (some tools prefer picking zip then rename)
-          cp -f build/ipa_dist/PHUB-Player-iOS.ipa build/ipa_dist/PHUB-Player-iOS.zip
-          # manifest
+          cp -f /tmp/Privacy-Browser-iOS.ipa build/ipa_dist/Privacy-Browser-iOS.ipa
+          cp -f build/ipa_dist/Privacy-Browser-iOS.ipa build/ipa_dist/PHUB-Player-iOS.ipa
           python3 - <<'PY'
           import os, hashlib
-          p = "build/ipa_dist/PHUB-Player-iOS.ipa"
+          p = "build/ipa_dist/Privacy-Browser-iOS.ipa"
           h = hashlib.sha256(open(p,"rb").read()).hexdigest()
-          open("build/ipa_dist/SHA256.txt","w").write(h + "  PHUB-Player-iOS.ipa\n")
+          open("build/ipa_dist/SHA256.txt","w").write(h + "  Privacy-Browser-iOS.ipa\n")
           print(h, os.path.getsize(p))
           PY
+          ls -la build/ipa_dist/
 
-      - name: Upload IPA
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PHUB-Player-iOS.ipa
+          name: Privacy-Browser-iOS
           path: |
+            mobile/build/ipa_dist/Privacy-Browser-iOS.ipa
             mobile/build/ipa_dist/PHUB-Player-iOS.ipa
             mobile/build/ipa_dist/SHA256.txt
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: privacy-browser-v${{ github.run_number }}
+          name: 隐私浏览器 iOS (侧载) #${{ github.run_number }}
+          body: |
+            ## 隐私浏览器 — 未签名 IPA（自签名 / 侧载）
+
+            适用：全能签、Sideloadly、AltStore、TrollStore 等自签名安装。
+
+            ### 文件
+            - `Privacy-Browser-iOS.ipa` — 主包
+            - `SHA256.txt` — 校验
+
+            ### 安装提示
+            1. 下载 IPA
+            2. 用你的证书 / 描述文件自签名
+            3. 安装到设备后信任证书（设置 → 通用 → VPN与设备管理）
+
+            Bundle ID: `com.phub.player.phubPlayer`
+            显示名: 隐私浏览器
+          files: |
+            mobile/build/ipa_dist/Privacy-Browser-iOS.ipa
+            mobile/build/ipa_dist/SHA256.txt
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

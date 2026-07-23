@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:phub_player/main.dart';
-import 'package:phub_player/services/app_settings.dart';
+import 'package:phub_player/privacy_browser/privacy_browser_shell.dart';
+import 'package:phub_player/privacy_browser/tab_manager.dart';
+import 'package:provider/provider.dart';
 
 void main() {
-  testWidgets('App renders smoke test', (WidgetTester tester) async {
-    final settings = AppSettings();
-    await tester.pumpWidget(PhubApp(settings: settings));
-    // Stateful PhubApp — one frame is enough for smoke
+  testWidgets('Privacy browser shell builds', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => TabManager(maxTabs: 3),
+        child: const MaterialApp(home: PrivacyBrowserShell()),
+      ),
+    );
     await tester.pump();
-
-    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.text('搜索或输入网址'), findsOneWidget);
+    expect(find.byTooltip('重置浏览器'), findsOneWidget);
   });
 }
