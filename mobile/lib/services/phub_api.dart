@@ -6,30 +6,21 @@ import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html_parser;
 
 import '../models/video_item.dart';
+import '../utils/http_client.dart';
+import '../utils/http_headers.dart';
 
 /// Pure-client API: scrapes pornhub.com HTML (no backend, no built-in proxy).
 /// Network/VPN is handled by the user / system.
 class PhubApi {
   PhubApi({Dio? dio})
       : _dio = dio ??
-            Dio(
-              BaseOptions(
-                connectTimeout: const Duration(seconds: 20),
-                receiveTimeout: const Duration(seconds: 30),
-                headers: {
-                  'User-Agent':
-                      'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 '
-                      '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                  'Accept':
-                      'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                  'Accept-Language': 'en-US,en;q=0.9',
-                  'Referer': 'https://www.pornhub.com/',
-                  'Origin': 'https://www.pornhub.com',
-                },
-                // Follow redirects; site often sets age cookies via redirect.
-                followRedirects: true,
-                validateStatus: (s) => s != null && s < 500,
-              ),
+            AppHttpClient.create(
+              headers: {
+                ...AppHttpHeaders.browser,
+                'Accept':
+                    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+              },
             ) {
     _dio.interceptors.add(
       InterceptorsWrapper(
@@ -99,7 +90,7 @@ class PhubApi {
   Future<List<VideoItem>> fetchRecommend({
     int limit = 50,
     Set<String>? exclude,
-    int maxUrls = 12,
+    int maxUrls = 5,
   }) =>
       _fetchListFeed(
         limit: limit,
@@ -119,13 +110,15 @@ class PhubApi {
   Future<List<VideoItem>> fetchAsian({
     int limit = 50,
     Set<String>? exclude,
-    int maxUrls = 12,
+    int maxUrls = 5,
   }) {
     final rng = Random();
+    // Fewer primary URLs → faster first paint; expand only if needed.
+    final orders = ['ht', 'mr', 'tr', 'cm']..shuffle(rng);
     final primary = <String>[
-      for (final o in ['ht', 'mr', 'tr', 'cm', 'vi', 'mv'])
-        'https://www.pornhub.com/video?c=1&o=$o&page=${1 + rng.nextInt(25)}',
-      'https://www.pornhub.com/video?c=1&page=${1 + rng.nextInt(20)}',
+      for (final o in orders.take(3))
+        'https://www.pornhub.com/video?c=1&o=$o&page=${1 + rng.nextInt(15)}',
+      'https://www.pornhub.com/video?c=1&page=${1 + rng.nextInt(12)}',
     ];
     return _fetchListFeed(
       limit: limit,
@@ -146,10 +139,11 @@ class PhubApi {
     bool shuffleAll = false,
   }) async {
     final rng = Random();
-    final baseOrders = ['ht', 'cm', 'md', 'tr', 'vi', 'mv', 'tf', 'mr'];
+    // Keep secondary pool small; first paint should not hit 10+ list pages.
+    final baseOrders = ['ht', 'cm', 'mr', 'tr']..shuffle(rng);
     final urls = <String>[...primary];
-    for (final order in baseOrders) {
-      final page = 1 + rng.nextInt(30);
+    for (final order in baseOrders.take(3)) {
+      final page = 1 + rng.nextInt(20);
       if (categoryId != null) {
         urls.add(
           'https://www.pornhub.com/video?c=$categoryId&o=$order&page=$page',
@@ -171,17 +165,33 @@ class PhubApi {
     if (exclude != null) seen.addAll(exclude);
     final results = <VideoItem>[];
     var tried = 0;
+    const concurrency = 3;
 
-    for (final u in ordered) {
-      if (tried >= maxUrls) break;
-      tried++;
-      try {
-        final html = await _getHtml(u);
-        results.addAll(_parseVideoListHtml(html, seen));
-      } catch (_) {
-        continue;
-      }
+    // Bounded parallel batches; merge after each batch (avoid concurrent Set/List races).
+    for (var i = 0; i < ordered.length && tried < maxUrls;) {
       if (results.length >= limit) break;
+      final batchUrls = <String>[];
+      while (batchUrls.length < concurrency &&
+          i < ordered.length &&
+          tried < maxUrls) {
+        batchUrls.add(ordered[i]);
+        i++;
+        tried++;
+      }
+      final pages = await Future.wait(
+        batchUrls.map((u) async {
+          try {
+            return await _getHtml(u);
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+      for (final html in pages) {
+        if (html == null) continue;
+        results.addAll(_parseVideoListHtml(html, seen));
+        if (results.length >= limit) break;
+      }
     }
 
     results.shuffle(rng);

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 
+import '../services/app_mode.dart';
 import 'browser_tab_model.dart';
 import 'privacy_engine.dart';
 import 'privacy_web_view.dart';
@@ -146,6 +147,36 @@ class _PrivacyBrowserShellState extends State<PrivacyBrowserShell>
     await _runHardReset();
   }
 
+  Future<void> _switchToPlayer() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1E),
+        title: const Text('切换到播放器', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          '下次启动将进入视频播放器（不会启动全量擦除）。\n请完全退出后重新打开。',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await AppModeStore.save(AppMode.player);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已设为播放器，请完全退出后重新打开')),
+    );
+  }
+
   Future<void> _runHardReset() async {
     if (_resetting) return;
     setState(() => _resetting = true);
@@ -191,6 +222,7 @@ class _PrivacyBrowserShellState extends State<PrivacyBrowserShell>
                   onReload: () => _activeController?.reload(),
                   onStop: () => _activeController?.stopLoading(),
                   onReset: _confirmReset,
+                  onSwitchPlayer: _switchToPlayer,
                   onAddTab: () {
                     if (tm.addTab()) {
                       _addressCtrl.clear();
@@ -275,6 +307,7 @@ class _TopBar extends StatelessWidget {
     required this.onReload,
     required this.onStop,
     required this.onReset,
+    required this.onSwitchPlayer,
     required this.onAddTab,
   });
 
@@ -288,6 +321,7 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onReload;
   final VoidCallback onStop;
   final VoidCallback onReset;
+  final VoidCallback onSwitchPlayer;
   final VoidCallback onAddTab;
 
   @override
@@ -349,6 +383,11 @@ class _TopBar extends StatelessWidget {
               tooltip: '新建标签',
               onPressed: canAdd ? onAddTab : null,
               icon: const Icon(Icons.add, size: 22),
+            ),
+            IconButton(
+              tooltip: '切换到播放器',
+              onPressed: onSwitchPlayer,
+              icon: const Icon(Icons.play_circle_outline, size: 22),
             ),
             IconButton(
               tooltip: '重置浏览器',

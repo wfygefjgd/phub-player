@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:dio/dio.dart';
 
 import '../models/video_item.dart';
+import '../utils/http_client.dart';
+import '../utils/http_headers.dart';
 import 'phub_api.dart';
 
 /// mitaohk.com — 中文字幕分类 (MacCMS type id=2).
@@ -14,22 +16,13 @@ class MitaoApi {
 
   MitaoApi({Dio? dio})
       : _dio = dio ??
-            Dio(
-              BaseOptions(
-                connectTimeout: const Duration(seconds: 20),
-                receiveTimeout: const Duration(seconds: 30),
-                headers: {
-                  'User-Agent':
-                      'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 '
-                      '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                  'Accept':
-                      'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                  'Referer': '$base/',
-                },
-                followRedirects: true,
-                validateStatus: (s) => s != null && s < 500,
-              ),
+            AppHttpClient.create(
+              headers: {
+                ...AppHttpHeaders.browser,
+                'Referer': '$base/',
+                'Origin': base,
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+              },
             );
 
   final Dio _dio;

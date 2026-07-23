@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/app_mode.dart';
 import '../services/app_settings.dart';
 import '../services/player_chrome.dart';
 import 'search_screen.dart';
@@ -59,6 +60,53 @@ class _HomeShellState extends State<HomeShell> {
                       activeThumbColor: const Color(0xFFFF6B35),
                       value: settings.skipIntro,
                       onChanged: settings.setSkipIntro,
+                    ),
+                    ListTile(
+                      title: const Text('切换到隐私浏览器',
+                          style: TextStyle(color: Colors.white)),
+                      subtitle: const Text(
+                        '下次启动进入强清理浏览器；仅浏览器模式会启动擦除数据。',
+                        style: TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
+                      trailing: const Icon(Icons.shield_outlined,
+                          color: Colors.white54),
+                      onTap: () async {
+                        Navigator.pop(ctx);
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (d) => AlertDialog(
+                            backgroundColor: const Color(0xFF2A2A2A),
+                            title: const Text('切换模式',
+                                style: TextStyle(color: Colors.white)),
+                            content: const Text(
+                              '将默认启动改为「隐私浏览器」。\n'
+                              '播放器设置不会在播放器模式下被启动擦除。\n'
+                              '需重启 App 生效。',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(d, false),
+                                child: const Text('取消'),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(d, true),
+                                child: const Text('确定'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (ok == true) {
+                          await AppModeStore.save(AppMode.browser);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('已设为隐私浏览器，请完全退出后重新打开'),
+                              ),
+                            );
+                          }
+                        }
+                      },
                     ),
                   ],
                 );

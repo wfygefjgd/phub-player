@@ -3,15 +3,15 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../utils/http_client.dart';
+
 /// Free Google Translate endpoint + memory/disk cache.
 class Translator {
   Translator({Dio? dio})
       : _dio = dio ??
-            Dio(
-              BaseOptions(
-                connectTimeout: const Duration(seconds: 15),
-                receiveTimeout: const Duration(seconds: 20),
-              ),
+            AppHttpClient.create(
+              connectTimeout: const Duration(seconds: 15),
+              receiveTimeout: const Duration(seconds: 20),
             );
 
   final Dio _dio;

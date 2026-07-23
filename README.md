@@ -4,6 +4,12 @@ PHub 视频播放器 — 桌面版 (Python) + 移动版 (Flutter)
 
 ## 版本
 
+当前源码：`mobile/pubspec.yaml` → **1.6.1+16**（默认播放器 + 可选隐私浏览器）。  
+桌面成品包常见为 **1.5.3～1.5.7**（以本机 `PHUB-Player-v*.apk/ipa` 为准）。
+
+**发布说明 / 版本对照：** 见 [CHANGELOG.md](./CHANGELOG.md)  
+（1.5.x 细项由产物时间线 + 源码注释补全；其中 iOS 多版多为随安卓同步打包。）
+
 ### Desktop (Python)
 桌面端 GUI 应用，支持浏览、搜索、播放、字幕翻译。
 
@@ -29,6 +35,7 @@ flutter build apk --release
 ```bash
 flutter build ios --release
 ```
+
 
 ## 目录结构
 

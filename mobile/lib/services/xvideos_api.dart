@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:dio/dio.dart';
 
 import '../models/video_item.dart';
+import '../utils/http_client.dart';
 import '../utils/http_headers.dart';
 import 'phub_api.dart';
 
@@ -10,20 +11,14 @@ import 'phub_api.dart';
 class XvideosApi {
   XvideosApi({Dio? dio})
       : _dio = dio ??
-            Dio(
-              BaseOptions(
-                connectTimeout: const Duration(seconds: 20),
-                receiveTimeout: const Duration(seconds: 30),
-                headers: {
-                  ...AppHttpHeaders.browser,
-                  'Referer': 'https://www.xvideos.com/',
-                  'Origin': 'https://www.xvideos.com',
-                  'Cookie': 'age_confirmed=1',
-                  'Accept-Language': 'en-US,en;q=0.9',
-                },
-                followRedirects: true,
-                validateStatus: (s) => s != null && s < 500,
-              ),
+            AppHttpClient.create(
+              headers: {
+                ...AppHttpHeaders.browser,
+                'Referer': 'https://www.xvideos.com/',
+                'Origin': 'https://www.xvideos.com',
+                'Cookie': 'age_confirmed=1',
+                'Accept-Language': 'en-US,en;q=0.9',
+              },
             );
 
   final Dio _dio;
