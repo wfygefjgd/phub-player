@@ -63,6 +63,12 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   final Map<int, VideoDetail> _detailCache = {};
   int? _prefetchingIndex;
   VideoDetail? _currentDetail;
+  int _currentStreamHeight = 0;
+  int _stallTicks = 0;
+  double _lastPosMs = 0;
+  int _lastTickMs = 0;
+  bool _stallPromptOpen = false;
+  bool _stallPromptDismissedForItem = false;
   PlayerChrome? _chrome;
 
   Map<String, String> get _headers {
@@ -209,6 +215,11 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       _titleText = item.title;
       _totalTime = '0:00';
     });
+    _currentStreamHeight = 0;
+    _stallTicks = 0;
+    _stallPromptDismissedForItem = false;
+    _lastPosMs = 0;
+    _lastTickMs = 0;
     _slider.value = 0;
     _curTime.value = '0:00';
 
@@ -261,6 +272,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     _currentDetail = detail;
 
     VideoPlayerController? ctrl;
+    StreamQuality? picked;
     var triedFallback = false;
     for (final c in candidates) {
       if (!mounted || seq != _seq) {
@@ -278,6 +290,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
           PlaybackHelpers.toast(context, '已切换到 ${c.label}');
         }
         ctrl = next;
+        picked = c;
         break;
       } catch (_) {
         triedFallback = true;
@@ -300,6 +313,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     }
 
     _failStreak = 0;
+    _currentStreamHeight = picked?.height ?? 0;
     _muted = context.read<AppSettings>().muted;
     ctrl.setVolume(_muted ? 0 : 1);
     final skip = context.read<AppSettings>().skipIntro;
@@ -375,17 +389,98 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     final ctrl = _controller;
     if (ctrl == null) return;
     _progressTimer?.cancel();
+    _lastPosMs = 0;
+    _lastTickMs = 0;
+    _stallTicks = 0;
     _progressTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (!ctrl.value.isInitialized || _seeking) return;
       final pos = ctrl.value.position;
       final dur = ctrl.value.duration;
       if (dur.inMilliseconds <= 0) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final posMs = pos.inMilliseconds.toDouble();
+      if (_lastTickMs > 0) {
+        final dMs = now - _lastTickMs;
+        final dPlayed = posMs - _lastPosMs;
+        final isPlaying = ctrl.value.isPlaying;
+        final nearEnd = posMs >= dur.inMilliseconds - 800;
+        if (isPlaying &&
+            !nearEnd &&
+            dMs >= 150 &&
+            dPlayed < 40 &&
+            posMs > 2000) {
+          _stallTicks++;
+        } else if (dPlayed >= 80) {
+          _stallTicks = 0;
+        }
+        if (_stallTicks >= 10) {
+          _stallTicks = 0;
+          // ignore: unawaited_futures
+          _maybePromptLowerQuality();
+        }
+      }
+      _lastTickMs = now;
+      _lastPosMs = posMs;
       _slider.value =
           (pos.inMilliseconds / dur.inMilliseconds).clamp(0.0, 1.0);
       _curTime.value = PlaybackHelpers.fmtDuration(pos);
       final t = PlaybackHelpers.fmtDuration(dur);
       if (t != _totalTime && mounted) setState(() => _totalTime = t);
     });
+  }
+
+  Future<void> _maybePromptLowerQuality() async {
+    if (!mounted || _stallPromptOpen || _stallPromptDismissedForItem) return;
+    final detail = _currentDetail;
+    if (detail == null || detail.streams.isEmpty) return;
+    final curH = _currentStreamHeight;
+    if (curH <= 0) return;
+    final lower = detail.streams
+        .where((s) => s.height > 0 && s.height < curH)
+        .toList()
+      ..sort((a, b) => b.height.compareTo(a.height));
+    if (lower.isEmpty) return;
+
+    final target = lower.first;
+    _stallPromptOpen = true;
+    try {
+      final ok = await showDialog<bool>(
+        context: context,
+        barrierDismissible: true,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A2A),
+          title: const Text('播放较卡', style: TextStyle(color: Colors.white)),
+          content: Text(
+            '检测到卡顿。是否切换到更低清晰度 ${target.label}？\n'
+            '点「继续」将按当前画质继续播（可能仍卡）。',
+            style: const TextStyle(color: Colors.white70, height: 1.35),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('继续'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('切换到 ${target.label}'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (ok == true) {
+        await context.read<AppSettings>().setQualityCap(target.height);
+        if (mounted) {
+          PlaybackHelpers.toast(context, '正在切换到 ${target.label}');
+          // ignore: unawaited_futures
+          _playIndex(_index);
+        }
+      } else {
+        _stallPromptDismissedForItem = true;
+      }
+    } finally {
+      _stallPromptOpen = false;
+    }
   }
 
   void _onPageChanged(int page) {

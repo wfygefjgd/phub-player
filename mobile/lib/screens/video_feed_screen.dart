@@ -73,6 +73,12 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   int? _prefetchingIndex;
   bool _seeking = false;
   VideoDetail? _currentDetail;
+  /// Height of the stream currently playing (0 if unknown).
+  int _currentStreamHeight = 0;
+  /// Stall detection for "try lower quality?" prompt (user must confirm).
+  int _stallTicks = 0;
+  bool _stallPromptOpen = false;
+  bool _stallPromptDismissedForItem = false;
   PlayerChrome? _chrome;
   String get _cacheKey => widget.kind.name;
 
@@ -369,6 +375,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _totalTime = '0:00';
       _speedLabel = '';
     });
+    _currentStreamHeight = 0;
+    _stallTicks = 0;
+    _stallPromptDismissedForItem = false;
     _sliderValue.value = 0;
     _currentTime.value = '0:00';
 
@@ -453,6 +462,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       return;
     }
     _baseSpeed = _estimateBaseSpeed(stream.height);
+    _currentStreamHeight = stream.height;
     if (!mounted || seq != _loadSeq || !_active) {
       await ctrl.dispose();
       return;
@@ -529,6 +539,24 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
             _lastSpeedLabel = label;
             if (mounted) setState(() => _speedLabel = label);
           }
+        }
+        // Stall: playing but position barely advances (buffering / lag).
+        // Do NOT auto-switch quality — only prompt; user must confirm.
+        final isPlaying = ctrl.value.isPlaying;
+        final nearEnd = posMs >= dur.inMilliseconds - 800;
+        if (isPlaying &&
+            !nearEnd &&
+            dMs >= 150 &&
+            dPlayed < 40 &&
+            posMs > 2000) {
+          _stallTicks++;
+        } else if (dPlayed >= 80) {
+          _stallTicks = 0;
+        }
+        if (_stallTicks >= 10) {
+          _stallTicks = 0;
+          // ignore: unawaited_futures
+          _maybePromptLowerQuality();
         }
       }
       _lastBufferedMs = bufMs;
@@ -674,6 +702,62 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     _controller?.setVolume(_muted ? 0 : 1);
     context.read<AppSettings>().setMuted(_muted);
     setState(() {});
+  }
+
+  /// Detected lag: ask user before lowering quality. Dismiss = keep current.
+  Future<void> _maybePromptLowerQuality() async {
+    if (!mounted || _stallPromptOpen || _stallPromptDismissedForItem) return;
+    final detail = _currentDetail;
+    if (detail == null || detail.streams.isEmpty) return;
+    final curH = _currentStreamHeight;
+    if (curH <= 0) return;
+    final lower = detail.streams
+        .where((s) => s.height > 0 && s.height < curH)
+        .toList()
+      ..sort((a, b) => b.height.compareTo(a.height));
+    if (lower.isEmpty) return;
+
+    final target = lower.first;
+    _stallPromptOpen = true;
+    try {
+      final ok = await showDialog<bool>(
+        context: context,
+        barrierDismissible: true,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A2A),
+          title: const Text('播放较卡', style: TextStyle(color: Colors.white)),
+          content: Text(
+            '检测到卡顿。是否切换到更低清晰度 ${target.label}？\n'
+            '点「继续」将按当前画质继续播（可能仍卡）。',
+            style: const TextStyle(color: Colors.white70, height: 1.35),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('继续'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('切换到 ${target.label}'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (ok == true) {
+        await context.read<AppSettings>().setQualityCap(target.height);
+        if (mounted) {
+          PlaybackHelpers.toast(context, '正在切换到 ${target.label}');
+          // ignore: unawaited_futures
+          _playIndex(_currentIndex);
+        }
+      } else {
+        // User declined or dismissed — do not auto-switch; don't nag this item.
+        _stallPromptDismissedForItem = true;
+      }
+    } finally {
+      _stallPromptOpen = false;
+    }
   }
 
   void _showQualityPicker() {
