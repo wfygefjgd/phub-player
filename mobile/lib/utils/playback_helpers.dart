@@ -58,7 +58,11 @@ class PlaybackHelpers {
   }
 
   /// Brief non-blocking toast.
-  static void toast(BuildContext context, String msg) {
+  static void toast(
+    BuildContext context,
+    String msg, {
+    Duration duration = const Duration(milliseconds: 1200),
+  }) {
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
@@ -66,13 +70,43 @@ class PlaybackHelpers {
     messenger.showSnackBar(
       SnackBar(
         content: Text(msg, style: const TextStyle(fontSize: 13)),
-        duration: const Duration(milliseconds: 900),
+        duration: duration,
         behavior: SnackBarBehavior.floating,
         backgroundColor: Colors.black87,
         margin: const EdgeInsets.fromLTRB(48, 0, 48, 72),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       ),
     );
+  }
+
+  /// Map raw exceptions to short Chinese hints (keep original if unknown).
+  static String friendlyError(Object error) {
+    final s = error.toString();
+    final low = s.toLowerCase();
+    if (s.contains('PhubException:')) {
+      return s.replaceFirst('PhubException: ', '');
+    }
+    if (low.contains('403') || low.contains('forbidden')) {
+      return '访问被拒绝(403)，请检查 VPN / 网络';
+    }
+    if (low.contains('404') || low.contains('not found')) {
+      return '内容不存在(404)';
+    }
+    if (low.contains('timeout') || low.contains('timed out')) {
+      return '网络超时，请稍后重试';
+    }
+    if (low.contains('socket') ||
+        low.contains('connection') ||
+        low.contains('network') ||
+        low.contains('failed host lookup') ||
+        low.contains('connection refused')) {
+      return '网络异常，请检查 VPN 是否开启';
+    }
+    if (low.contains('handshake') || low.contains('certificate')) {
+      return '安全连接失败，请检查网络环境';
+    }
+    if (s.length > 80) return '${s.substring(0, 80)}…';
+    return s;
   }
 
   static String fmtDuration(Duration d) {

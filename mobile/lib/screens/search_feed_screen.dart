@@ -224,25 +224,44 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
         detail = await _fetchDetail(item.url);
         _detailCache[index] = detail;
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted && seq == _seq) {
         setState(() => _pageLoading = false);
+        PlaybackHelpers.toast(
+          context,
+          '详情加载失败：${PlaybackHelpers.friendlyError(e)}',
+        );
         _scheduleSkipToNext(index);
       }
       return;
     }
     if (!mounted || seq != _seq) return;
 
+    if (detail.countryBlocked) {
+      setState(() => _pageLoading = false);
+      PlaybackHelpers.toast(context, '该视频在当前地区不可用，已跳过');
+      _scheduleSkipToNext(index);
+      return;
+    }
+    if (detail.unavailable) {
+      setState(() => _pageLoading = false);
+      PlaybackHelpers.toast(context, '视频不可用，已跳过');
+      _scheduleSkipToNext(index);
+      return;
+    }
+
     final cap = context.read<AppSettings>().qualityCap;
     final candidates = PlaybackHelpers.streamCandidates(detail, cap);
     if (candidates.isEmpty) {
       setState(() => _pageLoading = false);
+      PlaybackHelpers.toast(context, '无可用播放地址，已跳过');
       _scheduleSkipToNext(index);
       return;
     }
     _currentDetail = detail;
 
     VideoPlayerController? ctrl;
+    var triedFallback = false;
     for (final c in candidates) {
       if (!mounted || seq != _seq) {
         await ctrl?.dispose();
@@ -255,9 +274,13 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       );
       try {
         await next.initialize();
+        if (triedFallback && mounted) {
+          PlaybackHelpers.toast(context, '已切换到 ${c.label}');
+        }
         ctrl = next;
         break;
       } catch (_) {
+        triedFallback = true;
         try {
           await next.dispose();
         } catch (_) {}
@@ -266,6 +289,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     if (ctrl == null) {
       if (mounted && seq == _seq) {
         setState(() => _pageLoading = false);
+        PlaybackHelpers.toast(context, '播放器初始化失败，已跳过');
         _scheduleSkipToNext(index);
       }
       return;

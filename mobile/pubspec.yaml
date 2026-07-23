@@ -1,7 +1,7 @@
 name: phub_player
 description: PHUB Player — video player for Android/iOS sideload
 publish_to: "none"
-version: 1.6.5+20
+version: 1.6.6+21
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

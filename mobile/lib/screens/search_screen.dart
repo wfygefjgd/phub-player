@@ -6,6 +6,7 @@ import '../services/mitao_api.dart';
 import '../services/phub_api.dart';
 import '../services/translator.dart';
 import '../services/xvideos_api.dart';
+import '../utils/playback_helpers.dart';
 import '../widgets/video_card.dart';
 import 'search_feed_screen.dart';
 
@@ -195,7 +196,7 @@ class _SearchScreenState extends State<SearchScreen>
       if (!mounted || gen != _searchGen) return;
       setState(() {
         _loading[src] = false;
-        _error[src] = e.toString().replaceFirst('PhubException: ', '');
+        _error[src] = PlaybackHelpers.friendlyError(e);
       });
     }
   }
