@@ -8,6 +8,7 @@ void main() {
   testWidgets('App renders smoke test', (WidgetTester tester) async {
     final settings = AppSettings();
     await tester.pumpWidget(PhubApp(settings: settings));
+    // Stateful PhubApp — one frame is enough for smoke
     await tester.pump();
 
     expect(find.byType(NavigationBar), findsOneWidget);

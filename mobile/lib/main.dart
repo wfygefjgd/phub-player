@@ -12,16 +12,38 @@ import 'services/xvideos_api.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // Do NOT lock orientation before runApp — Android 15 + forced-landscape
+  // emulators crash if portrait-only is applied during Activity create.
+  // Orientation is applied after first frame in [PhubApp].
   final settings = AppSettings();
   await settings.load();
   runApp(PhubApp(settings: settings));
 }
 
-class PhubApp extends StatelessWidget {
+class PhubApp extends StatefulWidget {
   const PhubApp({super.key, required this.settings});
 
   final AppSettings settings;
+
+  @override
+  State<PhubApp> createState() => _PhubAppState();
+}
+
+class _PhubAppState extends State<PhubApp> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // After first frame only — safe on Android 12–15
+      PlayerChrome.applyAllOrientations();
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ));
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +53,7 @@ class PhubApp extends StatelessWidget {
         Provider(create: (_) => XvideosApi()),
         Provider(create: (_) => MitaoApi()),
         Provider(create: (_) => Translator()),
-        ChangeNotifierProvider.value(value: settings),
+        ChangeNotifierProvider.value(value: widget.settings),
         ChangeNotifierProvider(create: (_) => PlayerChrome()),
       ],
       child: MaterialApp(
