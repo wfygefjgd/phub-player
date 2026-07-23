@@ -382,31 +382,46 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     if (!mounted || seq != _loadSeq || !_active) return;
 
     final cap = context.read<AppSettings>().qualityCap;
-    final stream = PlaybackHelpers.pickStream(detail, cap) ?? detail.bestStream;
-    if (stream == null) {
+    final candidates = PlaybackHelpers.streamCandidates(detail, cap);
+    if (candidates.isEmpty) {
       setState(() => _pageLoading = false);
       _scheduleSkipToNext(index);
       return;
     }
 
-    _baseSpeed = _estimateBaseSpeed(stream.height);
     _currentDetail = detail;
 
-    final ctrl = VideoPlayerController.networkUrl(
-      Uri.parse(stream.url),
-      httpHeaders: _httpHeaders,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-    );
-    try {
-      await ctrl.initialize();
-    } catch (_) {
-      await ctrl.dispose();
+    VideoPlayerController? ctrl;
+    StreamQuality? stream;
+    for (final c in candidates) {
+      if (!mounted || seq != _loadSeq || !_active) {
+        await ctrl?.dispose();
+        return;
+      }
+      final next = VideoPlayerController.networkUrl(
+        Uri.parse(c.url),
+        httpHeaders: _httpHeaders,
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      );
+      try {
+        await next.initialize();
+        ctrl = next;
+        stream = c;
+        break;
+      } catch (_) {
+        try {
+          await next.dispose();
+        } catch (_) {}
+      }
+    }
+    if (ctrl == null || stream == null) {
       if (mounted && seq == _loadSeq) {
         setState(() => _pageLoading = false);
         _scheduleSkipToNext(index);
       }
       return;
     }
+    _baseSpeed = _estimateBaseSpeed(stream.height);
     if (!mounted || seq != _loadSeq || !_active) {
       await ctrl.dispose();
       return;
@@ -526,7 +541,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     } catch (_) {}
   }
 
-  /// Batch-translate newly loaded English titles in the feed list.
+  /// Batch-translate newly loaded English titles; prioritize near current index.
   Future<void> _translateItemsRange(int start) async {
     if (start < 0 || start >= _items.length) return;
     if (widget.kind == VideoFeedKind.zhong) return;
@@ -534,8 +549,21 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       final slice = _items.sublist(start);
       final urls = slice.map((e) => e.url).toList();
       final titles = slice.map((e) => e.title).toList();
-      final zh = await context.read<Translator>().batchEnToZh(titles);
+      // Translate current neighborhood first (snappier UI), then the rest.
+      final order = List<int>.generate(titles.length, (i) => i);
+      order.sort((a, b) {
+        final da = ((start + a) - _currentIndex).abs();
+        final db = ((start + b) - _currentIndex).abs();
+        return da.compareTo(db);
+      });
+      final orderedTitles = [for (final i in order) titles[i]];
+      final zhOrdered =
+          await context.read<Translator>().batchEnToZh(orderedTitles);
       if (!mounted) return;
+      final zh = List<String>.filled(titles.length, '');
+      for (var k = 0; k < order.length; k++) {
+        zh[order[k]] = zhOrdered[k];
+      }
       setState(() {
         for (var i = 0; i < zh.length; i++) {
           final idx = start + i;
@@ -543,7 +571,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
           if (_items[idx].url != urls[i]) continue;
           if (zh[i].isEmpty || zh[i] == titles[i]) continue;
           _items[idx] = _items[idx].copyWith(title: zh[i]);
-          // Refresh on-screen title if this is the current video.
           if (idx == _currentIndex &&
               (_titleText == titles[i] || _titleText.isEmpty)) {
             _titleText = zh[i];

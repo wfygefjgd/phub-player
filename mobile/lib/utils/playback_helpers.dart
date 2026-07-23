@@ -25,6 +25,38 @@ class PlaybackHelpers {
   static StreamQuality? pickStream(VideoDetail detail, int qualityCap) =>
       detail.streamForCap(qualityCap);
 
+  /// Ordered candidates for init fallback: preferred/cap first, then lower, then higher.
+  static List<StreamQuality> streamCandidates(
+    VideoDetail detail,
+    int qualityCap,
+  ) {
+    if (detail.streams.isEmpty) return const [];
+    final primary = detail.streamForCap(qualityCap);
+    final rest = [...detail.streams]
+      ..sort((a, b) => b.pixels.compareTo(a.pixels));
+    final out = <StreamQuality>[];
+    final seen = <String>{};
+    void add(StreamQuality? s) {
+      if (s == null || s.url.isEmpty) return;
+      if (seen.add(s.url)) out.add(s);
+    }
+
+    add(primary);
+    // Lower first (more likely to play on weak net), then any remaining.
+    final lower = rest
+        .where((s) =>
+            primary == null || s.height <= 0 || s.height < primary.height)
+        .toList()
+      ..sort((a, b) => b.pixels.compareTo(a.pixels));
+    for (final s in lower) {
+      add(s);
+    }
+    for (final s in rest) {
+      add(s);
+    }
+    return out;
+  }
+
   /// Brief non-blocking toast.
   static void toast(BuildContext context, String msg) {
     if (!context.mounted) return;

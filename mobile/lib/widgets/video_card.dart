@@ -33,6 +33,9 @@ class VideoCard extends StatelessWidget {
                       imageUrl: item.thumb!,
                       httpHeaders: headers,
                       fit: BoxFit.cover,
+                      // Decode near display size — less memory on long lists.
+                      memCacheWidth: 280,
+                      memCacheHeight: 176,
                       placeholder: (_, __) =>
                           Container(color: const Color(0xFF1A1A1A)),
                       errorWidget: (_, __, ___) => Container(

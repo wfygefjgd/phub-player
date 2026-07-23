@@ -234,23 +234,36 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     if (!mounted || seq != _seq) return;
 
     final cap = context.read<AppSettings>().qualityCap;
-    final stream = PlaybackHelpers.pickStream(detail, cap) ?? detail.bestStream;
-    if (stream == null) {
+    final candidates = PlaybackHelpers.streamCandidates(detail, cap);
+    if (candidates.isEmpty) {
       setState(() => _pageLoading = false);
       _scheduleSkipToNext(index);
       return;
     }
     _currentDetail = detail;
 
-    final ctrl = VideoPlayerController.networkUrl(
-      Uri.parse(stream.url),
-      httpHeaders: _headers,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-    );
-    try {
-      await ctrl.initialize();
-    } catch (_) {
-      await ctrl.dispose();
+    VideoPlayerController? ctrl;
+    for (final c in candidates) {
+      if (!mounted || seq != _seq) {
+        await ctrl?.dispose();
+        return;
+      }
+      final next = VideoPlayerController.networkUrl(
+        Uri.parse(c.url),
+        httpHeaders: _headers,
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      );
+      try {
+        await next.initialize();
+        ctrl = next;
+        break;
+      } catch (_) {
+        try {
+          await next.dispose();
+        } catch (_) {}
+      }
+    }
+    if (ctrl == null) {
       if (mounted && seq == _seq) {
         setState(() => _pageLoading = false);
         _scheduleSkipToNext(index);

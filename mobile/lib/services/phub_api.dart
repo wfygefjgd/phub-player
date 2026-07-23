@@ -48,6 +48,11 @@ class PhubApi {
 
   static final _flashvarsRe =
       RegExp(r'var\s+flashvars_\d+\s*=\s*(\{.*?\});', dotAll: true);
+  // Site occasionally omits `var` or uses different spacing.
+  static final _flashvarsReAlt =
+      RegExp(r'flashvars_\d+\s*=\s*(\{.*?\});', dotAll: true);
+  static final _flashvarsReQuoted =
+      RegExp(r'''["']flashvars_\d+["']\s*[:=]\s*(\{.*?\})''', dotAll: true);
   static final _viewkeyRe = RegExp(r'viewkey=([a-f0-9]+)');
   static final _durationRe = RegExp(
     r'class="[^"]*duration[^"]*"[^>]*>\s*(\d+:\d+(?::\d+)?)\s*<',
@@ -213,16 +218,9 @@ class PhubApi {
   Future<VideoDetail> getVideoDetail(String url) async {
     final normalized = _normalizeVideoUrl(url);
     final html = await _getHtml(normalized);
-    final match = _flashvarsRe.firstMatch(html);
-    if (match == null) {
+    final flash = _parseFlashvarsMap(html);
+    if (flash == null) {
       throw PhubException('无法解析视频数据（可能被地区限制或页面结构变更）');
-    }
-
-    Map<String, dynamic> flash;
-    try {
-      flash = jsonDecode(match.group(1)!) as Map<String, dynamic>;
-    } catch (e) {
-      throw PhubException('flashvars JSON 解析失败: $e');
     }
 
     final title = (flash['video_title'] ?? '').toString();
@@ -539,6 +537,24 @@ class PhubApi {
         return parts[0] * 3600 + parts[1] * 60 + parts[2];
       }
     } catch (_) {}
+    return null;
+  }
+
+  /// Multi-strategy flashvars parse (site HTML changes often).
+  Map<String, dynamic>? _parseFlashvarsMap(String html) {
+    for (final re in [_flashvarsRe, _flashvarsReAlt, _flashvarsReQuoted]) {
+      final match = re.firstMatch(html);
+      if (match == null) continue;
+      final raw = match.group(1);
+      if (raw == null || raw.isEmpty) continue;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, dynamic>) return decoded;
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {
+        // try next pattern
+      }
+    }
     return null;
   }
 
