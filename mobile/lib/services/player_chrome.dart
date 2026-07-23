@@ -1,44 +1,20 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Global chrome: hide bottom tabs / settings when immersive fullscreen.
-///
-/// Android 15 notes:
-/// - Never call setPreferredOrientations during Activity create (before first frame).
-/// - Never lock to portrait-only: forced-landscape emulators will crash.
-/// - Fullscreen prefers landscape but still allows all as fallback if set fails.
+/// Immersive UI chrome. Avoids aggressive orientation APIs on Android
+/// (can hard-crash Android 15 emulators / GPU host).
 class PlayerChrome extends ChangeNotifier {
   bool _immersive = false;
 
   bool get immersive => _immersive;
 
-  /// Allow every orientation (safe default for Android 12–15).
-  static Future<void> applyAllOrientations() async {
+  bool get _isAndroid {
     try {
-      await SystemChrome.setPreferredOrientations(const [
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-    } catch (_) {}
-  }
-
-  /// @deprecated use [applyAllOrientations]
-  static Future<void> applyPortraitPreferred() => applyAllOrientations();
-
-  static Future<void> applyLandscapePreferred() async {
-    try {
-      // Prefer landscape for immersive video, but keep portrait as escape hatch
-      // so Android 15 / multi-window cannot force a crash.
-      await SystemChrome.setPreferredOrientations(const [
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-      ]);
+      return !kIsWeb && Platform.isAndroid;
     } catch (_) {
-      await applyAllOrientations();
+      return false;
     }
   }
 
@@ -48,15 +24,17 @@ class PlayerChrome extends ChangeNotifier {
     notifyListeners();
     try {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    } catch (_) {
+    } catch (_) {}
+    // Only rotate on iOS — Android uses current device orientation to avoid
+    // emulator GPU deaths when forcing landscape from app code.
+    if (!_isAndroid) {
       try {
-        await SystemChrome.setEnabledSystemUIMode(
-          SystemUiMode.manual,
-          overlays: const [],
-        );
+        await SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
       } catch (_) {}
     }
-    await applyLandscapePreferred();
   }
 
   Future<void> exitFullscreen() async {
@@ -64,16 +42,21 @@ class PlayerChrome extends ChangeNotifier {
     _immersive = false;
     notifyListeners();
     try {
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    } catch (_) {
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: SystemUiOverlay.values,
+      );
+    } catch (_) {}
+    if (!_isAndroid) {
       try {
-        await SystemChrome.setEnabledSystemUIMode(
-          SystemUiMode.manual,
-          overlays: SystemUiOverlay.values,
-        );
+        await SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
       } catch (_) {}
     }
-    await applyAllOrientations();
   }
 
   Future<void> toggleFullscreen() async {
@@ -84,7 +67,6 @@ class PlayerChrome extends ChangeNotifier {
     }
   }
 
-  /// Call from dispose of feed screens to avoid stuck landscape UI chrome.
   Future<void> ensurePortraitChrome() async {
     if (_immersive) {
       await exitFullscreen();
