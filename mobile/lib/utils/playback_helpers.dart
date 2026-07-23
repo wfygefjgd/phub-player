@@ -5,17 +5,18 @@ import '../models/video_item.dart';
 
 /// Shared playback helpers for feed / search-feed.
 class PlaybackHelpers {
-  /// Skip ~10s intro ads when [enabled]. Short clips (<=15s) stay at 0.
+  /// Skip ~15s intro ads when [enabled]. Short clips stay near start.
   static Future<void> skipIntro(
     VideoPlayerController ctrl, {
     bool enabled = true,
   }) async {
     if (!enabled || !ctrl.value.isInitialized) return;
     final dur = ctrl.value.duration;
-    if (dur.inSeconds <= 15) return;
-    final targetSec = dur.inSeconds <= 20 ? 5 : 10;
-    final remain = dur.inSeconds - targetSec;
-    if (remain < 3) return;
+    final total = dur.inSeconds;
+    if (total <= 20) return;
+    // Prefer 15s; leave at least 5s of content
+    final targetSec = total <= 25 ? 8 : 15;
+    if (total - targetSec < 5) return;
     try {
       await ctrl.seekTo(Duration(seconds: targetSec));
     } catch (_) {}
@@ -122,7 +123,7 @@ class FeedSideControls extends StatelessWidget {
   }
 }
 
-/// Bottom seek bar; [dragging] freezes external progress updates.
+/// Bottom seek bar; drag only updates UI — parent seeks on [onChangeEnd].
 class FeedProgressBar extends StatelessWidget {
   const FeedProgressBar({
     super.key,
@@ -144,7 +145,7 @@ class FeedProgressBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 44,
+      height: 48,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.bottomCenter,
@@ -168,13 +169,17 @@ class FeedProgressBar extends StatelessWidget {
           ),
           Expanded(
             child: SliderTheme(
-              data: const SliderThemeData(
-                trackHeight: 2,
-                thumbShape: RoundSliderThumbShape(enabledThumbRadius: 5),
-                overlayShape: RoundSliderOverlayShape(overlayRadius: 10),
-                activeTrackColor: Color(0xFFFF6B35),
+              data: SliderThemeData(
+                trackHeight: 3.5,
+                thumbShape:
+                    const RoundSliderThumbShape(enabledThumbRadius: 7),
+                overlayShape:
+                    const RoundSliderOverlayShape(overlayRadius: 14),
+                activeTrackColor: const Color(0xFFFF6B35),
                 inactiveTrackColor: Colors.white24,
-                thumbColor: Color(0xFFFF6B35),
+                thumbColor: const Color(0xFFFF6B35),
+                // Smoother visual while dragging
+                trackShape: const RoundedRectSliderTrackShape(),
               ),
               child: ValueListenableBuilder<double>(
                 valueListenable: slider,

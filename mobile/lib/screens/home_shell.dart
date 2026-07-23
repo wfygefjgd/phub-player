@@ -50,7 +50,7 @@ class _HomeShellState extends State<HomeShell> {
                       dense: true,
                     ),
                     SwitchListTile(
-                      title: const Text('跳过片头约 10 秒',
+                      title: const Text('跳过片头约 15 秒',
                           style: TextStyle(color: Colors.white)),
                       subtitle: const Text(
                         '跳过片头广告；短视频自动关闭。画质请在播放页右侧按钮切换。',

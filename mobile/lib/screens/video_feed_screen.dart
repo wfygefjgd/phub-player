@@ -443,8 +443,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     _lastBufferedMs = 0;
     _lastTickMs = 0;
     _lastPosMs = 0;
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 400), (_) {
-      if (!ctrl.value.isInitialized) return;
+    // 200ms feels smoother than 400ms; skip UI while user is dragging.
+    _progressTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (!ctrl.value.isInitialized || _seeking) return;
       final pos = ctrl.value.position;
       final dur = ctrl.value.duration;
       if (dur.inMilliseconds <= 0) return;
@@ -472,7 +473,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _lastBufferedMs = bufMs;
       _lastTickMs = now;
       _lastPosMs = posMs;
-      if (_seeking) return;
       _sliderValue.value =
           (pos.inMilliseconds / dur.inMilliseconds).clamp(0.0, 1.0);
       _currentTime.value = PlaybackHelpers.fmtDuration(pos);
@@ -511,14 +511,24 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     return 600;
   }
 
-  void _seek(double v) {
+  /// Drag preview only — no player seek (avoids hitching).
+  void _onSeekPreview(double v) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     final pos = (c.value.duration.inMilliseconds * v).round();
-    c.seekTo(Duration(milliseconds: pos));
     _sliderValue.value = v;
     _currentTime.value =
         PlaybackHelpers.fmtDuration(Duration(milliseconds: pos));
+  }
+
+  void _onSeekCommit(double v) {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    final pos = (c.value.duration.inMilliseconds * v).round();
+    _sliderValue.value = v;
+    _currentTime.value =
+        PlaybackHelpers.fmtDuration(Duration(milliseconds: pos));
+    c.seekTo(Duration(milliseconds: pos));
   }
 
   void _toggleMute() {
@@ -729,10 +739,10 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                       slider: _sliderValue,
                       curTime: _currentTime,
                       totalTime: _totalTime,
-                      onChanged: _seek,
+                      onChanged: _onSeekPreview,
                       onChangeStart: (_) => _seeking = true,
                       onChangeEnd: (v) {
-                        _seek(v);
+                        _onSeekCommit(v);
                         _seeking = false;
                       },
                     ),

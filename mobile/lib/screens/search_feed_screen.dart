@@ -310,7 +310,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     final ctrl = _controller;
     if (ctrl == null) return;
     _progressTimer?.cancel();
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 400), (_) {
+    _progressTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (!ctrl.value.isInitialized || _seeking) return;
       final pos = ctrl.value.position;
       final dur = ctrl.value.duration;
@@ -330,13 +330,21 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     _ensureMoreIfNearEnd(page);
   }
 
-  void _seek(double v) {
+  void _onSeekPreview(double v) {
     final c = _controller;
     if (c == null || !c.value.isInitialized) return;
     final ms = (c.value.duration.inMilliseconds * v).round();
-    c.seekTo(Duration(milliseconds: ms));
     _slider.value = v;
     _curTime.value = PlaybackHelpers.fmtDuration(Duration(milliseconds: ms));
+  }
+
+  void _onSeekCommit(double v) {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    final ms = (c.value.duration.inMilliseconds * v).round();
+    _slider.value = v;
+    _curTime.value = PlaybackHelpers.fmtDuration(Duration(milliseconds: ms));
+    c.seekTo(Duration(milliseconds: ms));
   }
 
   void _toggleMute() {
@@ -528,10 +536,10 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
                       slider: _slider,
                       curTime: _curTime,
                       totalTime: _totalTime,
-                      onChanged: _seek,
+                      onChanged: _onSeekPreview,
                       onChangeStart: (_) => _seeking = true,
                       onChangeEnd: (v) {
-                        _seek(v);
+                        _onSeekCommit(v);
                         _seeking = false;
                       },
                     ),
