@@ -5,35 +5,33 @@ import 'package:dio/io.dart';
 
 import 'http_headers.dart';
 
-/// Shared Dio factory — UA / timeouts / optional local HTTP·SOCKS proxy.
-///
-/// Default is **DIRECT** (system route / TUN). When [proxyEnabled] is true,
-/// list/detail/translate requests use the user-configured proxy so non-TUN
-/// setups (system proxy only for browsers) still work.
+/// Shared Dio factory. Proxy only when [applyProxyConfig] has a real endpoint.
+/// Never hardcodes host/port.
 class AppHttpClient {
   AppHttpClient._();
 
   static bool proxyEnabled = false;
-  static String proxyHost = '10.0.2.2';
-  static int proxyPort = 7890;
-  /// `http` or `socks5`
+  static String proxyHost = '';
+  static int proxyPort = 0;
   static String proxyType = 'http';
 
-  /// Call after [AppSettings] load / whenever proxy prefs change.
   static void applyProxyConfig({
     required bool enabled,
     required String host,
     required int port,
     required String type,
   }) {
-    proxyEnabled = enabled;
-    proxyHost = host.trim().isEmpty ? '10.0.2.2' : host.trim();
-    proxyPort = port > 0 && port < 65536 ? port : 7890;
+    proxyHost = host.trim();
+    proxyPort = (port > 0 && port < 65536) ? port : 0;
     proxyType = type == 'socks5' ? 'socks5' : 'http';
+    // Require a real endpoint — never proxy to empty/0.
+    proxyEnabled = enabled && proxyHost.isNotEmpty && proxyPort > 0;
   }
 
   static String _findProxy(Uri uri) {
-    if (!proxyEnabled) return 'DIRECT';
+    if (!proxyEnabled || proxyHost.isEmpty || proxyPort <= 0) {
+      return 'DIRECT';
+    }
     final h = proxyHost;
     final p = proxyPort;
     if (proxyType == 'socks5') {

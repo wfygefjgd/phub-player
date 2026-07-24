@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/app_settings.dart';
 
-/// Shared settings sheet: skip intro, stall prompt, local proxy, quality.
+/// Shared settings sheet: skip intro, stall prompt, proxy, quality.
 Future<void> showPlayerSettingsSheet(
   BuildContext context, {
   VoidCallback? onQualityChanged,
@@ -77,19 +77,18 @@ Future<void> showPlayerSettingsSheet(
                     ),
                     const Divider(color: Colors.white12),
                     const ListTile(
-                      title: Text('本地代理（非 TUN 时用）',
+                      title: Text('网络代理',
                           style:
                               TextStyle(color: Colors.white70, fontSize: 13)),
                       subtitle: Text(
-                        '本 App 无内置节点。开启后列表/详情/翻译走你填写的代理。'
-                        '模拟器→电脑代理：主机 10.0.2.2；手机本机代理：127.0.0.1。'
-                        '端口填 Clash/V2 的 HTTP 或 SOCKS 端口（如 7890）。',
+                        '默认跟随系统：能读到系统/VPN 下发的代理就用，读不到就直连。'
+                        '不写死任何主机或端口。也可手动填写；已开 TUN 可关闭此项。',
                         style: TextStyle(color: Colors.white38, fontSize: 11),
                       ),
                       dense: true,
                     ),
                     SwitchListTile(
-                      title: const Text('启用本地代理',
+                      title: const Text('使用系统/本地代理',
                           style: TextStyle(color: Colors.white)),
                       subtitle: Text(
                         settings.proxySummary,
@@ -158,8 +157,11 @@ class _ProxyEditorState extends State<_ProxyEditor> {
   @override
   void initState() {
     super.initState();
-    _host = TextEditingController(text: widget.settings.proxyHost);
-    _port = TextEditingController(text: '${widget.settings.proxyPort}');
+    final s = widget.settings;
+    _host = TextEditingController(text: s.proxyHost);
+    _port = TextEditingController(
+      text: s.proxyPort > 0 ? '${s.proxyPort}' : '',
+    );
   }
 
   @override
@@ -171,13 +173,30 @@ class _ProxyEditorState extends State<_ProxyEditor> {
 
   Future<void> _apply() async {
     await widget.settings.setProxyHost(_host.text);
-    await widget.settings
-        .setProxyPort(int.tryParse(_port.text.trim()) ?? 7890);
+    final p = int.tryParse(_port.text.trim());
+    await widget.settings.setProxyPort(p ?? 0);
     widget.onApplied?.call();
     if (mounted) {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(
-          content: Text('代理已应用：${widget.settings.proxySummary}'),
+          content: Text(widget.settings.proxySummary),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> _redetect() async {
+    await widget.settings.refreshSystemProxy();
+    _host.text = widget.settings.proxyHost;
+    _port.text =
+        widget.settings.proxyPort > 0 ? '${widget.settings.proxyPort}' : '';
+    widget.onApplied?.call();
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text(widget.settings.proxySummary),
           duration: const Duration(seconds: 2),
         ),
       );
@@ -213,6 +232,11 @@ class _ProxyEditorState extends State<_ProxyEditor> {
                   setState(() {});
                 },
               ),
+              const Spacer(),
+              TextButton(
+                onPressed: _redetect,
+                child: const Text('重新检测系统代理'),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -220,9 +244,9 @@ class _ProxyEditorState extends State<_ProxyEditor> {
             controller: _host,
             style: const TextStyle(color: Colors.white),
             decoration: const InputDecoration(
-              labelText: '主机',
+              labelText: '主机（可空=未配置）',
               labelStyle: TextStyle(color: Colors.white54),
-              hintText: '模拟器 10.0.2.2 / 真机 127.0.0.1',
+              hintText: '由系统检测或手动填写',
               hintStyle: TextStyle(color: Colors.white30, fontSize: 12),
               isDense: true,
               border: OutlineInputBorder(),
@@ -235,9 +259,9 @@ class _ProxyEditorState extends State<_ProxyEditor> {
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             decoration: const InputDecoration(
-              labelText: '端口',
+              labelText: '端口（可空）',
               labelStyle: TextStyle(color: Colors.white54),
-              hintText: '7890',
+              hintText: '不写死默认端口',
               hintStyle: TextStyle(color: Colors.white30),
               isDense: true,
               border: OutlineInputBorder(),
@@ -249,7 +273,7 @@ class _ProxyEditorState extends State<_ProxyEditor> {
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFFFF6B35),
             ),
-            child: const Text('保存并应用代理'),
+            child: const Text('保存手动代理'),
           ),
         ],
       ),

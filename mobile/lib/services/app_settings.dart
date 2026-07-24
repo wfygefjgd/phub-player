@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/http_client.dart';
+import '../utils/system_proxy.dart';
 
 /// Lightweight user prefs.
 class AppSettings extends ChangeNotifier {
@@ -13,17 +14,21 @@ class AppSettings extends ChangeNotifier {
   static const _kProxyHost = 'proxy_host';
   static const _kProxyPort = 'proxy_port';
   static const _kProxyType = 'proxy_type'; // http | socks5
+  static const _kProxyUserConfigured = 'proxy_user_configured';
 
   bool _skipIntro = true;
   bool _muted = false;
-  /// 0 = auto (<=720 preferred); else max height 360/480/720/1080
   int _qualityCap = 0;
   bool _promptOnStall = true;
-  bool _proxyEnabled = false;
-  String _proxyHost = '10.0.2.2';
-  int _proxyPort = 7890;
+
+  /// Follow system proxy when present (default). No hardcoded host/port.
+  bool _proxyEnabled = true;
+  String _proxyHost = '';
+  int _proxyPort = 0;
   String _proxyType = 'http';
+  bool _userConfiguredProxy = false;
   bool _ready = false;
+  String _proxyAutoNote = '';
 
   bool get skipIntro => _skipIntro;
   bool get muted => _muted;
@@ -34,6 +39,10 @@ class AppSettings extends ChangeNotifier {
   int get proxyPort => _proxyPort;
   String get proxyType => _proxyType;
   bool get ready => _ready;
+  String get proxyAutoNote => _proxyAutoNote;
+
+  bool get hasProxyEndpoint =>
+      _proxyHost.isNotEmpty && _proxyPort > 0 && _proxyPort < 65536;
 
   String get qualityLabel {
     switch (_qualityCap) {
@@ -51,13 +60,19 @@ class AppSettings extends ChangeNotifier {
   }
 
   String get proxySummary {
-    if (!_proxyEnabled) return '关闭（系统直连 / TUN）';
-    return '${_proxyType.toUpperCase()} $_proxyHost:$_proxyPort';
+    if (!_proxyEnabled) return '关闭（纯直连 / 仅 TUN）';
+    if (!hasProxyEndpoint) {
+      return '已开启，但未检测到系统代理（将直连；可手动填写）';
+    }
+    final note = _proxyAutoNote.isEmpty ? '' : ' · $_proxyAutoNote';
+    return '${_proxyType.toUpperCase()} $_proxyHost:$_proxyPort$note';
   }
 
   void _syncHttpClient() {
+    // Only enable Dio proxy when we actually have a real endpoint.
+    final use = _proxyEnabled && hasProxyEndpoint;
     AppHttpClient.applyProxyConfig(
-      enabled: _proxyEnabled,
+      enabled: use,
       host: _proxyHost,
       port: _proxyPort,
       type: _proxyType,
@@ -71,9 +86,12 @@ class AppSettings extends ChangeNotifier {
       _muted = p.getBool(_kMuted) ?? false;
       _qualityCap = p.getInt(_kQualityCap) ?? 0;
       _promptOnStall = p.getBool(_kPromptOnStall) ?? true;
-      _proxyEnabled = p.getBool(_kProxyEnabled) ?? false;
-      _proxyHost = p.getString(_kProxyHost) ?? '10.0.2.2';
-      _proxyPort = p.getInt(_kProxyPort) ?? 7890;
+      _userConfiguredProxy = p.getBool(_kProxyUserConfigured) ?? false;
+
+      // Prefer "use system proxy when available" by default.
+      _proxyEnabled = p.getBool(_kProxyEnabled) ?? true;
+      _proxyHost = p.getString(_kProxyHost) ?? '';
+      _proxyPort = p.getInt(_kProxyPort) ?? 0;
       _proxyType = p.getString(_kProxyType) ?? 'http';
       if (_proxyType != 'socks5') _proxyType = 'http';
     } catch (_) {
@@ -81,11 +99,44 @@ class AppSettings extends ChangeNotifier {
       _muted = false;
       _qualityCap = 0;
       _promptOnStall = true;
-      _proxyEnabled = false;
-      _proxyHost = '10.0.2.2';
-      _proxyPort = 7890;
+      _userConfiguredProxy = false;
+      _proxyEnabled = true;
+      _proxyHost = '';
+      _proxyPort = 0;
       _proxyType = 'http';
     }
+
+    if (_userConfiguredProxy && hasProxyEndpoint) {
+      _proxyAutoNote = '手动设置';
+    } else {
+      // Always re-detect on launch unless user fully customized endpoint.
+      final detected = await SystemProxy.detect();
+      if (detected != null) {
+        _proxyHost = detected.host;
+        _proxyPort = detected.port;
+        _proxyType = detected.type;
+        _proxyAutoNote = '系统代理 (${detected.source})';
+        // Soft-persist detected values for display; do not mark user-configured.
+        try {
+          final p = await SharedPreferences.getInstance();
+          await p.setString(_kProxyHost, _proxyHost);
+          await p.setInt(_kProxyPort, _proxyPort);
+          await p.setString(_kProxyType, _proxyType);
+          if (!p.containsKey(_kProxyEnabled)) {
+            await p.setBool(_kProxyEnabled, true);
+          }
+        } catch (_) {}
+      } else {
+        // No system proxy: leave empty → Dio DIRECT (correct for clean devices).
+        if (!_userConfiguredProxy) {
+          _proxyHost = '';
+          _proxyPort = 0;
+          _proxyType = 'http';
+        }
+        _proxyAutoNote = '未检测到系统代理';
+      }
+    }
+
     _syncHttpClient();
     _ready = true;
     notifyListeners();
@@ -143,38 +194,77 @@ class AppSettings extends ChangeNotifier {
   }
 
   Future<void> setProxyHost(String v) async {
-    final t = v.trim();
-    if (t == _proxyHost) return;
-    _proxyHost = t.isEmpty ? '10.0.2.2' : t;
+    final host = v.trim();
+    if (host == _proxyHost && _userConfiguredProxy) return;
+    _proxyHost = host;
+    _userConfiguredProxy = true;
+    _proxyAutoNote = '手动设置';
     _syncHttpClient();
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
       await p.setString(_kProxyHost, _proxyHost);
+      await p.setBool(_kProxyUserConfigured, true);
     } catch (_) {}
   }
 
   Future<void> setProxyPort(int v) async {
-    final port = (v > 0 && v < 65536) ? v : 7890;
-    if (port == _proxyPort) return;
+    final port = (v > 0 && v < 65536) ? v : 0;
+    if (port == _proxyPort && _userConfiguredProxy) return;
     _proxyPort = port;
+    _userConfiguredProxy = true;
+    _proxyAutoNote = '手动设置';
     _syncHttpClient();
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
       await p.setInt(_kProxyPort, _proxyPort);
+      await p.setBool(_kProxyUserConfigured, true);
     } catch (_) {}
   }
 
   Future<void> setProxyType(String v) async {
     final t = v == 'socks5' ? 'socks5' : 'http';
-    if (t == _proxyType) return;
+    if (t == _proxyType && _userConfiguredProxy) return;
     _proxyType = t;
+    _userConfiguredProxy = true;
+    _proxyAutoNote = '手动设置';
     _syncHttpClient();
     notifyListeners();
     try {
       final p = await SharedPreferences.getInstance();
       await p.setString(_kProxyType, _proxyType);
+      await p.setBool(_kProxyUserConfigured, true);
     } catch (_) {}
+  }
+
+  /// Re-read system proxy (e.g. after user enables proxy app).
+  Future<void> refreshSystemProxy() async {
+    if (_userConfiguredProxy && hasProxyEndpoint) {
+      // Keep manual endpoint; still allow re-detect if user wants — caller may clear flag later.
+    }
+    final detected = await SystemProxy.detect();
+    if (detected != null) {
+      _proxyHost = detected.host;
+      _proxyPort = detected.port;
+      _proxyType = detected.type;
+      _proxyAutoNote = '系统代理 (${detected.source})';
+      _userConfiguredProxy = false;
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setString(_kProxyHost, _proxyHost);
+        await p.setInt(_kProxyPort, _proxyPort);
+        await p.setString(_kProxyType, _proxyType);
+        await p.setBool(_kProxyUserConfigured, false);
+      } catch (_) {}
+    } else {
+      if (!_userConfiguredProxy) {
+        _proxyHost = '';
+        _proxyPort = 0;
+      }
+      _proxyAutoNote = '未检测到系统代理';
+    }
+    _syncHttpClient();
+    notifyListeners();
   }
 }
