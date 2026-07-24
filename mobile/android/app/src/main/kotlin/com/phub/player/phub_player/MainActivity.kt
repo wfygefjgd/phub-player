@@ -9,8 +9,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.net.URI
 
 /**
- * Exposes system HTTP proxy to Dart so Dio can follow the same path as many
- * other apps when the user uses system proxy (not only TUN).
+ * Exposes system HTTP proxy to Dart so Dio can follow system proxy when set.
+ * Never returns invented host/port.
  */
 class MainActivity : FlutterActivity() {
     private val channelName = "phub_player/system_proxy"
@@ -26,8 +26,15 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    private fun emptyProxy(): Map<String, Any?> = mapOf(
+        "host" to null,
+        "port" to null,
+        "type" to null,
+        "source" to "none",
+    )
+
     private fun readSystemProxy(): Map<String, Any?> {
-        // 1) Default / system properties (often set by proxy apps or ADB)
+        // 1) System properties (set by some proxy tools / ADB)
         val hostProp = System.getProperty("http.proxyHost")
             ?: System.getProperty("https.proxyHost")
         val portProp = System.getProperty("http.proxyPort")
@@ -44,28 +51,25 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // 2) ConnectivityManager default proxy (Android API)
-        try {
-            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            val proxy: ProxyInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                cm.defaultProxy
-            } else {
-                @Suppress("DEPRECATION")
-                android.net.Proxy.getDefaultProxyInfo(this)
-            }
-            if (proxy != null) {
-                val h = proxy.host
-                val p = proxy.port
-                if (!h.isNullOrBlank() && p in 1..65535) {
-                    return mapOf(
-                        "host" to h,
-                        "port" to p,
-                        "type" to "http",
-                        "source" to "connectivity",
-                    )
+        // 2) ConnectivityManager (API 23+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                val proxy: ProxyInfo? = cm.defaultProxy
+                if (proxy != null) {
+                    val h = proxy.host
+                    val p = proxy.port
+                    if (!h.isNullOrBlank() && p in 1..65535) {
+                        return mapOf(
+                            "host" to h,
+                            "port" to p,
+                            "type" to "http",
+                            "source" to "connectivity",
+                        )
+                    }
                 }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
 
         // 3) ProxySelector (PAC / JVM defaults)
@@ -96,11 +100,6 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
         }
 
-        return mapOf(
-            "host" to null,
-            "port" to null,
-            "type" to null,
-            "source" to "none",
-        )
+        return emptyProxy()
     }
 }
