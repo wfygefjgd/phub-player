@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -9,8 +10,8 @@ import '../models/video_item.dart';
 import '../utils/http_client.dart';
 import '../utils/http_headers.dart';
 
-/// Pure-client API: scrapes pornhub.com HTML (no backend, no built-in proxy).
-/// Network/VPN is handled by the user / system.
+/// Pure-client API: scrapes site HTML (no backend, no built-in nodes).
+/// Uses system route by default; optional local proxy via [AppHttpClient].
 class PhubApi {
   PhubApi({Dio? dio})
       : _dio = dio ??
@@ -170,33 +171,56 @@ class PhubApi {
     if (exclude != null) seen.addAll(exclude);
     final results = <VideoItem>[];
     var tried = 0;
+    var failCount = 0;
     const concurrency = 3;
 
-    // Bounded parallel batches; merge after each batch (avoid concurrent Set/List races).
-    for (var i = 0; i < ordered.length && tried < maxUrls;) {
-      if (results.length >= limit) break;
-      final batchUrls = <String>[];
-      while (batchUrls.length < concurrency &&
-          i < ordered.length &&
-          tried < maxUrls) {
-        batchUrls.add(ordered[i]);
-        i++;
-        tried++;
-      }
-      final pages = await Future.wait(
-        batchUrls.map((u) async {
-          try {
-            return await _getHtml(u);
-          } catch (_) {
-            return null;
-          }
-        }),
-      );
-      for (final html in pages) {
-        if (html == null) continue;
-        results.addAll(_parseVideoListHtml(html, seen));
+    Future<List<VideoItem>> runBatches() async {
+      for (var i = 0; i < ordered.length && tried < maxUrls;) {
         if (results.length >= limit) break;
+        final batchUrls = <String>[];
+        while (batchUrls.length < concurrency &&
+            i < ordered.length &&
+            tried < maxUrls) {
+          batchUrls.add(ordered[i]);
+          i++;
+          tried++;
+        }
+        final pages = await Future.wait(
+          batchUrls.map((u) async {
+            try {
+              return await _getHtml(u);
+            } catch (_) {
+              failCount++;
+              return null;
+            }
+          }),
+        );
+        for (final html in pages) {
+          if (html == null) continue;
+          results.addAll(_parseVideoListHtml(html, seen));
+          if (results.length >= limit) break;
+        }
       }
+      return results;
+    }
+
+    // Hard cap so the UI never spins for minutes when the network is blocked.
+    try {
+      await runBatches().timeout(const Duration(seconds: 28));
+    } on TimeoutException {
+      if (results.isEmpty) {
+        throw PhubException('加载超时，请检查网络或系统 VPN 后重试');
+      }
+    }
+
+    if (results.isEmpty) {
+      if (failCount > 0 || tried > 0) {
+        throw PhubException(
+          '无法访问源站（请求失败 $failCount/$tried）。'
+          '请开 TUN/VPN，或在设置中启用「本地代理」',
+        );
+      }
+      return [];
     }
 
     results.shuffle(rng);

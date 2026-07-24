@@ -87,7 +87,7 @@ class PlaybackHelpers {
       return s.replaceFirst('PhubException: ', '');
     }
     if (low.contains('403') || low.contains('forbidden')) {
-      return '访问被拒绝(403)，请检查 VPN / 网络';
+      return '访问被拒绝(403)，请检查 VPN / 本地代理';
     }
     if (low.contains('404') || low.contains('not found')) {
       return '内容不存在(404)';
@@ -100,7 +100,7 @@ class PlaybackHelpers {
         low.contains('network') ||
         low.contains('failed host lookup') ||
         low.contains('connection refused')) {
-      return '网络异常，请检查 VPN 是否开启';
+      return '网络异常：请开 TUN/VPN，或设置→启用本地代理';
     }
     if (low.contains('handshake') || low.contains('certificate')) {
       return '安全连接失败，请检查网络环境';

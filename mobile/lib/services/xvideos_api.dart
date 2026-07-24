@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:dio/dio.dart';
@@ -115,16 +116,34 @@ class XvideosApi {
     final seen = <String>{...?exclude};
     final results = <VideoItem>[];
     var tried = 0;
-    for (final u in urls) {
-      if (tried >= maxUrls) break;
-      tried++;
-      try {
-        final html = await _getHtml(u);
-        results.addAll(_parseList(html, seen));
-      } catch (_) {
-        continue;
+    var failCount = 0;
+    Future<void> run() async {
+      for (final u in urls) {
+        if (tried >= maxUrls) break;
+        tried++;
+        try {
+          final html = await _getHtml(u);
+          results.addAll(_parseList(html, seen));
+        } catch (_) {
+          failCount++;
+          continue;
+        }
+        if (results.length >= limit) break;
       }
-      if (results.length >= limit) break;
+    }
+
+    try {
+      await run().timeout(const Duration(seconds: 28));
+    } on TimeoutException {
+      if (results.isEmpty) {
+        throw PhubException('加载超时，请检查网络或系统 VPN 后重试');
+      }
+    }
+    if (results.isEmpty && (failCount > 0 || tried > 0)) {
+      throw PhubException(
+        '无法访问源站（请求失败 $failCount/$tried）。'
+        '请开 TUN/VPN，或在设置中启用「本地代理」',
+      );
     }
     results.shuffle(rng);
     if (results.length > limit) return results.sublist(0, limit);
