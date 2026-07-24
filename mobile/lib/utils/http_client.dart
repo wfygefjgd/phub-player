@@ -4,9 +4,9 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 
 import 'http_headers.dart';
+import 'system_proxy.dart';
 
-/// Shared Dio factory. Proxy only when [applyProxyConfig] has a real endpoint.
-/// Never hardcodes host/port.
+/// Shared Dio factory. Proxy only when a real endpoint is configured.
 class AppHttpClient {
   AppHttpClient._();
 
@@ -24,8 +24,15 @@ class AppHttpClient {
     proxyHost = host.trim();
     proxyPort = (port > 0 && port < 65536) ? port : 0;
     proxyType = type == 'socks5' ? 'socks5' : 'http';
-    // Require a real endpoint — never proxy to empty/0.
     proxyEnabled = enabled && proxyHost.isNotEmpty && proxyPort > 0;
+
+    // Best-effort for video_player / ExoPlayer (HTTP proxy only).
+    // ignore: discarded_futures
+    SystemProxy.applyJvmHttpProxy(
+      enabled: proxyEnabled && proxyType == 'http',
+      host: proxyHost,
+      port: proxyPort,
+    );
   }
 
   static String _findProxy(Uri uri) {

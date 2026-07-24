@@ -9,8 +9,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.net.URI
 
 /**
- * Exposes system HTTP proxy to Dart so Dio can follow system proxy when set.
- * Never returns invented host/port.
+ * System proxy detection + best-effort JVM http(s) proxy props for media stacks.
+ * Never invents host/port.
  */
 class MainActivity : FlutterActivity() {
     private val channelName = "phub_player/system_proxy"
@@ -21,6 +21,28 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getSystemProxy" -> result.success(readSystemProxy())
+                    "applyJvmHttpProxy" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: false
+                        if (enabled) {
+                            val host = call.argument<String>("host")?.trim().orEmpty()
+                            val port = call.argument<Int>("port") ?: 0
+                            if (host.isNotEmpty() && port in 1..65535) {
+                                System.setProperty("http.proxyHost", host)
+                                System.setProperty("http.proxyPort", port.toString())
+                                System.setProperty("https.proxyHost", host)
+                                System.setProperty("https.proxyPort", port.toString())
+                                // Clear non-proxy hosts that might block
+                                System.clearProperty("http.nonProxyHosts")
+                                System.clearProperty("https.nonProxyHosts")
+                            }
+                        } else {
+                            System.clearProperty("http.proxyHost")
+                            System.clearProperty("http.proxyPort")
+                            System.clearProperty("https.proxyHost")
+                            System.clearProperty("https.proxyPort")
+                        }
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -34,7 +56,6 @@ class MainActivity : FlutterActivity() {
     )
 
     private fun readSystemProxy(): Map<String, Any?> {
-        // 1) System properties (set by some proxy tools / ADB)
         val hostProp = System.getProperty("http.proxyHost")
             ?: System.getProperty("https.proxyHost")
         val portProp = System.getProperty("http.proxyPort")
@@ -51,7 +72,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // 2) ConnectivityManager (API 23+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -72,7 +92,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // 3) ProxySelector (PAC / JVM defaults)
         try {
             val list = java.net.ProxySelector.getDefault()
                 ?.select(URI("https://www.google.com"))

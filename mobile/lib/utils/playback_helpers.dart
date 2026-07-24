@@ -83,30 +83,34 @@ class PlaybackHelpers {
   static String friendlyError(Object error) {
     final s = error.toString();
     final low = s.toLowerCase();
+    String core;
     if (s.contains('PhubException:')) {
-      return s.replaceFirst('PhubException: ', '');
-    }
-    if (low.contains('403') || low.contains('forbidden')) {
-      return '访问被拒绝(403)，请检查 VPN / 本地代理';
-    }
-    if (low.contains('404') || low.contains('not found')) {
-      return '内容不存在(404)';
-    }
-    if (low.contains('timeout') || low.contains('timed out')) {
-      return '网络超时，请稍后重试';
-    }
-    if (low.contains('socket') ||
+      core = s.replaceFirst('PhubException: ', '');
+    } else if (low.contains('403') || low.contains('forbidden')) {
+      core = '访问被拒绝(403)';
+    } else if (low.contains('404') || low.contains('not found')) {
+      core = '内容不存在(404)';
+    } else if (low.contains('timeout') || low.contains('timed out')) {
+      core = '网络超时';
+    } else if (low.contains('socket') ||
         low.contains('connection') ||
         low.contains('network') ||
         low.contains('failed host lookup') ||
-        low.contains('connection refused')) {
-      return '网络异常：请开 TUN/VPN，或设置→启用本地代理';
+        low.contains('connection refused') ||
+        low.contains('proxy')) {
+      core = '网络异常 / 代理不可达';
+    } else if (low.contains('handshake') || low.contains('certificate')) {
+      core = '安全连接失败';
+    } else if (s.length > 80) {
+      core = '${s.substring(0, 80)}…';
+    } else {
+      core = s;
     }
-    if (low.contains('handshake') || low.contains('certificate')) {
-      return '安全连接失败，请检查网络环境';
-    }
-    if (s.length > 80) return '${s.substring(0, 80)}…';
-    return s;
+    return '$core\n\n'
+        '可尝试：\n'
+        '· 设置 → 网络代理 →「重新检测系统代理」\n'
+        '· 或开 TUN / 系统 VPN\n'
+        '· 手动填写代理主机与端口后保存';
   }
 
   static String fmtDuration(Duration d) {

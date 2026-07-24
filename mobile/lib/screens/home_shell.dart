@@ -18,8 +18,40 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
+  final _hotKey = GlobalKey<VideoFeedScreenState>();
+  final _asianKey = GlobalKey<VideoFeedScreenState>();
+  final _xKey = GlobalKey<VideoFeedScreenState>();
+  final _zhongKey = GlobalKey<VideoFeedScreenState>();
+
+  List<GlobalKey<VideoFeedScreenState>> get _feedKeys =>
+      [_hotKey, _asianKey, _xKey, _zhongKey];
+
   void _openSettings() {
     showPlayerSettingsSheet(context);
+  }
+
+  void _onTabSelected(int i) {
+    if (i == _index) return;
+    // Pause/dispose players on all feed tabs (saves memory; list cache kept).
+    for (final k in _feedKeys) {
+      k.currentState?.pausePlayback(releasePlayers: true);
+    }
+    setState(() => _index = i);
+    // Start the newly selected feed after frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _index != i) return;
+      if (i >= 0 && i < _feedKeys.length) {
+        _feedKeys[i].currentState?.startPlaying();
+      }
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _hotKey.currentState?.startPlaying();
+    });
   }
 
   @override
@@ -31,8 +63,34 @@ class _HomeShellState extends State<HomeShell> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          _buildBody(),
-          // Hide on search list tab (index 4); player overlay has its own gear.
+          // Keep all tabs alive — no white flash / re-fetch on tab switch.
+          IndexedStack(
+            index: _index,
+            sizing: StackFit.expand,
+            children: [
+              VideoFeedScreen(
+                key: _hotKey,
+                kind: VideoFeedKind.hot,
+                autoStart: false,
+              ),
+              VideoFeedScreen(
+                key: _asianKey,
+                kind: VideoFeedKind.asian,
+                autoStart: false,
+              ),
+              VideoFeedScreen(
+                key: _xKey,
+                kind: VideoFeedKind.x,
+                autoStart: false,
+              ),
+              VideoFeedScreen(
+                key: _zhongKey,
+                kind: VideoFeedKind.zhong,
+                autoStart: false,
+              ),
+              const SearchScreen(key: ValueKey('search')),
+            ],
+          ),
           if (!immersive && _index != 4)
             Positioned(
               top: 0,
@@ -62,10 +120,7 @@ class _HomeShellState extends State<HomeShell> {
                 filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                 child: NavigationBar(
                   selectedIndex: _index,
-                  onDestinationSelected: (i) {
-                    if (i == _index) return;
-                    setState(() => _index = i);
-                  },
+                  onDestinationSelected: _onTabSelected,
                   backgroundColor: Colors.black.withValues(alpha: 0.28),
                   surfaceTintColor: Colors.transparent,
                   shadowColor: Colors.transparent,
@@ -107,36 +162,5 @@ class _HomeShellState extends State<HomeShell> {
               ),
             ),
     );
-  }
-
-  Widget _buildBody() {
-    switch (_index) {
-      case 0:
-        return const VideoFeedScreen(
-          key: ValueKey('feed_hot'),
-          kind: VideoFeedKind.hot,
-          autoStart: true,
-        );
-      case 1:
-        return const VideoFeedScreen(
-          key: ValueKey('feed_asian'),
-          kind: VideoFeedKind.asian,
-          autoStart: true,
-        );
-      case 2:
-        return const VideoFeedScreen(
-          key: ValueKey('feed_x'),
-          kind: VideoFeedKind.x,
-          autoStart: true,
-        );
-      case 3:
-        return const VideoFeedScreen(
-          key: ValueKey('feed_zhong'),
-          kind: VideoFeedKind.zhong,
-          autoStart: true,
-        );
-      default:
-        return const SearchScreen(key: ValueKey('search'));
-    }
   }
 }

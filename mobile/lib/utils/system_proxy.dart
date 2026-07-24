@@ -26,7 +26,6 @@ class SystemProxy {
   static const _channel = MethodChannel('phub_player/system_proxy');
 
   /// Returns null when the device has no system/env proxy configured.
-  /// Never invents host/port (no 10.0.2.2 / 7890 defaults).
   static Future<SystemProxyInfo?> detect() async {
     if (!kIsWeb && Platform.isAndroid) {
       try {
@@ -74,6 +73,23 @@ class SystemProxy {
     return null;
   }
 
+  /// Best-effort: set JVM http(s) proxy props so some media stacks (ExoPlayer)
+  /// may follow the same HTTP proxy as Dio. SOCKS often ignored by ExoPlayer.
+  static Future<void> applyJvmHttpProxy({
+    required bool enabled,
+    required String host,
+    required int port,
+  }) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod<void>('applyJvmHttpProxy', {
+        'enabled': enabled && host.isNotEmpty && port > 0 && port < 65536,
+        'host': host,
+        'port': port,
+      });
+    } catch (_) {}
+  }
+
   static SystemProxyInfo? _parseProxyUri(String raw) {
     try {
       var s = raw;
@@ -81,7 +97,6 @@ class SystemProxy {
       final u = Uri.parse(s);
       final host = u.host;
       if (host.isEmpty) return null;
-      // Only accept explicit port — do not invent 7890.
       if (!u.hasPort || u.port <= 0 || u.port > 65535) return null;
       final scheme = u.scheme.toLowerCase();
       final type = scheme.contains('socks') ? 'socks5' : 'http';

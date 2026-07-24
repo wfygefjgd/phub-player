@@ -285,7 +285,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         _loadingMore = false;
         _loading = false;
         if (_items.isEmpty) {
-          _error = '$_feedLabel暂无内容，请检查网络或稍后重试';
+          _error = '$_feedLabel暂无内容。\n'
+              '若需代理才能访问：设置→网络代理→重新检测，或开 TUN。';
         }
       });
       // PH / X titles are English — batch translate after list load.
@@ -700,7 +701,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                 Text(
                   _error ?? '$_feedLabel暂无内容',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  style: const TextStyle(
+                      color: Colors.white70, fontSize: 14, height: 1.4),
                 ),
                 const SizedBox(height: 16),
                 FilledButton(
@@ -716,6 +718,14 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
                     _loadMore();
                   },
                   child: const Text('重新加载'),
+                ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: () {
+                    showPlayerSettingsSheet(context);
+                  },
+                  child: const Text('打开网络代理设置',
+                      style: TextStyle(color: Color(0xFFFF6B35))),
                 ),
               ],
             ),
