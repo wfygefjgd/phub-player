@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/app_settings.dart';
 
-/// Shared settings sheet: skip intro, stall prompt, proxy, quality.
+/// Shared settings sheet: skip intro, proxy, quality (manual only).
 Future<void> showPlayerSettingsSheet(
   BuildContext context, {
   VoidCallback? onQualityChanged,
@@ -63,17 +63,6 @@ Future<void> showPlayerSettingsSheet(
                       activeThumbColor: const Color(0xFFFF6B35),
                       value: settings.skipIntro,
                       onChanged: settings.setSkipIntro,
-                    ),
-                    SwitchListTile(
-                      title: const Text('卡顿时询问降画质',
-                          style: TextStyle(color: Colors.white)),
-                      subtitle: const Text(
-                        '播放卡顿时弹窗询问；点「继续」则不切换。',
-                        style: TextStyle(color: Colors.white38, fontSize: 12),
-                      ),
-                      activeThumbColor: const Color(0xFFFF6B35),
-                      value: settings.promptOnStall,
-                      onChanged: settings.setPromptOnStall,
                     ),
                     const Divider(color: Colors.white12),
                     const ListTile(

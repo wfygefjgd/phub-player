@@ -9,7 +9,6 @@ class AppSettings extends ChangeNotifier {
   static const _kSkipIntro = 'skip_intro_10s';
   static const _kMuted = 'playback_muted';
   static const _kQualityCap = 'quality_cap_height'; // 0=auto preferred
-  static const _kPromptOnStall = 'prompt_on_stall';
   static const _kProxyEnabled = 'proxy_enabled';
   static const _kProxyHost = 'proxy_host';
   static const _kProxyPort = 'proxy_port';
@@ -19,8 +18,6 @@ class AppSettings extends ChangeNotifier {
   bool _skipIntro = true;
   bool _muted = false;
   int _qualityCap = 0;
-  bool _promptOnStall = true;
-
   /// Follow system proxy when present (default). No hardcoded host/port.
   bool _proxyEnabled = true;
   String _proxyHost = '';
@@ -33,7 +30,6 @@ class AppSettings extends ChangeNotifier {
   bool get skipIntro => _skipIntro;
   bool get muted => _muted;
   int get qualityCap => _qualityCap;
-  bool get promptOnStall => _promptOnStall;
   bool get proxyEnabled => _proxyEnabled;
   String get proxyHost => _proxyHost;
   int get proxyPort => _proxyPort;
@@ -85,7 +81,6 @@ class AppSettings extends ChangeNotifier {
       _skipIntro = p.getBool(_kSkipIntro) ?? true;
       _muted = p.getBool(_kMuted) ?? false;
       _qualityCap = p.getInt(_kQualityCap) ?? 0;
-      _promptOnStall = p.getBool(_kPromptOnStall) ?? true;
       _userConfiguredProxy = p.getBool(_kProxyUserConfigured) ?? false;
 
       // Prefer "use system proxy when available" by default.
@@ -98,7 +93,6 @@ class AppSettings extends ChangeNotifier {
       _skipIntro = true;
       _muted = false;
       _qualityCap = 0;
-      _promptOnStall = true;
       _userConfiguredProxy = false;
       _proxyEnabled = true;
       _proxyHost = '';
@@ -169,16 +163,6 @@ class AppSettings extends ChangeNotifier {
     try {
       final p = await SharedPreferences.getInstance();
       await p.setInt(_kQualityCap, v);
-    } catch (_) {}
-  }
-
-  Future<void> setPromptOnStall(bool v) async {
-    if (_promptOnStall == v) return;
-    _promptOnStall = v;
-    notifyListeners();
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setBool(_kPromptOnStall, v);
     } catch (_) {}
   }
 

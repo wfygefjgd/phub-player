@@ -64,19 +64,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
   final Map<int, VideoDetail> _detailCache = {};
   int? _prefetchingIndex;
   VideoDetail? _currentDetail;
-  int _currentStreamHeight = 0;
-  /// Stall prompt: session-only quality for this item (not global).
-  int? _sessionQualityCap;
-  int _stallTicks = 0;
-  double _lastPosMs = 0;
-  int _lastTickMs = 0;
-  bool _stallPromptOpen = false;
-  bool _stallPromptDismissedForItem = false;
-  int _stallArmedAfterMs = 0;
   PlayerChrome? _chrome;
-
-  int get _effectiveQualityCap =>
-      _sessionQualityCap ?? context.read<AppSettings>().qualityCap;
 
   Map<String, String> get _headers {
     switch (widget.source) {
@@ -147,14 +135,7 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
         state == AppLifecycleState.hidden) {
       _controller?.pause();
       WakelockPlus.disable();
-      _stallTicks = 0;
-      _stallPromptOpen = false;
-      _stallArmedAfterMs =
-          DateTime.now().millisecondsSinceEpoch + 5000;
     } else if (state == AppLifecycleState.resumed) {
-      _stallTicks = 0;
-      _stallArmedAfterMs =
-          DateTime.now().millisecondsSinceEpoch + 5000;
       _controller?.play();
       WakelockPlus.enable();
     }
@@ -230,13 +211,6 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       _titleText = item.title;
       _totalTime = '0:00';
     });
-    _currentStreamHeight = 0;
-    _stallTicks = 0;
-    _stallPromptDismissedForItem = false;
-    _stallArmedAfterMs =
-        DateTime.now().millisecondsSinceEpoch + 4000;
-    _lastPosMs = 0;
-    _lastTickMs = 0;
     _slider.value = 0;
     _curTime.value = '0:00';
 
@@ -278,9 +252,10 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       return;
     }
 
-    final cap = _effectiveQualityCap;
-    final candidates = PlaybackHelpers.streamCandidates(detail, cap);
-    if (candidates.isEmpty) {
+    final cap = context.read<AppSettings>().qualityCap;
+    final stream =
+        PlaybackHelpers.pickStream(detail, cap) ?? detail.bestStream;
+    if (stream == null) {
       setState(() => _pageLoading = false);
       PlaybackHelpers.toast(context, '无可用播放地址，已跳过');
       _scheduleSkipToNext(index);
@@ -288,58 +263,38 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     }
     _currentDetail = detail;
 
-    VideoPlayerController? ctrl;
-    StreamQuality? picked;
-    var triedFallback = false;
-    for (final c in candidates) {
-      if (!mounted || seq != _seq) {
-        await ctrl?.dispose();
-        return;
-      }
-      final next = VideoPlayerController.networkUrl(
-        Uri.parse(c.url),
-        httpHeaders: _headers,
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      );
+    final player = VideoPlayerController.networkUrl(
+      Uri.parse(stream.url),
+      httpHeaders: _headers,
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+    );
+    try {
+      await player.initialize();
+    } catch (_) {
       try {
-        await next.initialize();
-        if (triedFallback && mounted) {
-          PlaybackHelpers.toast(context, '已切换到 ${c.label}');
-        }
-        ctrl = next;
-        picked = c;
-        break;
-      } catch (_) {
-        triedFallback = true;
-        try {
-          await next.dispose();
-        } catch (_) {}
-      }
-    }
-    if (ctrl == null) {
+        await player.dispose();
+      } catch (_) {}
       if (mounted && seq == _seq) {
         setState(() => _pageLoading = false);
-        PlaybackHelpers.toast(context, '播放器初始化失败，已跳过');
+        PlaybackHelpers.toast(context, '播放失败，可在设置中手动换画质后重试');
         _scheduleSkipToNext(index);
       }
       return;
     }
     if (!mounted || seq != _seq) {
-      await ctrl.dispose();
+      await player.dispose();
       return;
     }
 
     _failStreak = 0;
-    _currentStreamHeight = picked?.height ?? 0;
     _muted = context.read<AppSettings>().muted;
-    ctrl.setVolume(_muted ? 0 : 1);
+    player.setVolume(_muted ? 0 : 1);
     final skip = context.read<AppSettings>().skipIntro;
-    await PlaybackHelpers.skipIntro(ctrl, enabled: skip);
+    await PlaybackHelpers.skipIntro(player, enabled: skip);
     if (!mounted || seq != _seq) {
-      await ctrl.dispose();
+      await player.dispose();
       return;
     }
-    final VideoPlayerController player = ctrl!;
     _controller = player;
     setState(() {
       _pageLoading = false;
@@ -406,101 +361,17 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
     final ctrl = _controller;
     if (ctrl == null) return;
     _progressTimer?.cancel();
-    _lastPosMs = 0;
-    _lastTickMs = 0;
-    _stallTicks = 0;
     _progressTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (!ctrl.value.isInitialized || _seeking) return;
       final pos = ctrl.value.position;
       final dur = ctrl.value.duration;
       if (dur.inMilliseconds <= 0) return;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final posMs = pos.inMilliseconds.toDouble();
-      if (_lastTickMs > 0) {
-        final dMs = now - _lastTickMs;
-        final dPlayed = posMs - _lastPosMs;
-        final isPlaying = ctrl.value.isPlaying;
-        final nearEnd = posMs >= dur.inMilliseconds - 800;
-        final armed = now >= _stallArmedAfterMs;
-        if (armed &&
-            isPlaying &&
-            !nearEnd &&
-            dMs >= 150 &&
-            dPlayed < 40 &&
-            posMs > 2000) {
-          _stallTicks++;
-        } else if (dPlayed >= 80) {
-          _stallTicks = 0;
-        }
-        if (_stallTicks >= 12) {
-          _stallTicks = 0;
-          // ignore: unawaited_futures
-          _maybePromptLowerQuality();
-        }
-      }
-      _lastTickMs = now;
-      _lastPosMs = posMs;
       _slider.value =
           (pos.inMilliseconds / dur.inMilliseconds).clamp(0.0, 1.0);
       _curTime.value = PlaybackHelpers.fmtDuration(pos);
       final t = PlaybackHelpers.fmtDuration(dur);
       if (t != _totalTime && mounted) setState(() => _totalTime = t);
     });
-  }
-
-  Future<void> _maybePromptLowerQuality() async {
-    if (!mounted || _stallPromptOpen || _stallPromptDismissedForItem) return;
-    if (!context.read<AppSettings>().promptOnStall) return;
-    final detail = _currentDetail;
-    if (detail == null || detail.streams.isEmpty) return;
-    final curH = _currentStreamHeight;
-    if (curH <= 0) return;
-    final lower = detail.streams
-        .where((s) => s.height > 0 && s.height < curH)
-        .toList()
-      ..sort((a, b) => b.height.compareTo(a.height));
-    if (lower.isEmpty) return;
-
-    final target = lower.first;
-    _stallPromptOpen = true;
-    try {
-      final ok = await showDialog<bool>(
-        context: context,
-        barrierDismissible: true,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF2A2A2A),
-          title: const Text('播放较卡', style: TextStyle(color: Colors.white)),
-          content: Text(
-            '检测到卡顿。是否切换到更低清晰度 ${target.label}？\n'
-            '仅影响本条视频。点「继续」将按当前画质继续播（可能仍卡）。',
-            style: const TextStyle(color: Colors.white70, height: 1.35),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('继续'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text('切换到 ${target.label}'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted) return;
-      if (ok == true) {
-        _sessionQualityCap = target.height;
-        if (mounted) {
-          PlaybackHelpers.toast(context, '正在切换到 ${target.label}（仅本条）');
-          // ignore: unawaited_futures
-          _playIndex(_index);
-        }
-      } else {
-        _stallPromptDismissedForItem = true;
-      }
-    } finally {
-      _stallPromptOpen = false;
-    }
   }
 
   void _openPlayerSettings() {
@@ -515,7 +386,6 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       context,
       qualityHeights: heights.isEmpty ? null : heights,
       onQualityChanged: () {
-        _sessionQualityCap = null;
         if (mounted) _playIndex(_index);
       },
     );
@@ -544,9 +414,6 @@ class _SearchFeedScreenState extends State<SearchFeedScreen>
       _seeking = false;
       return;
     }
-    _stallTicks = 0;
-    _stallArmedAfterMs =
-        DateTime.now().millisecondsSinceEpoch + 3000;
     final durMs = c.value.duration.inMilliseconds;
     if (durMs <= 0) {
       _seeking = false;

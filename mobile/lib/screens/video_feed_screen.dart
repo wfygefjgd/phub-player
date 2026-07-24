@@ -74,21 +74,8 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   int? _prefetchingIndex;
   bool _seeking = false;
   VideoDetail? _currentDetail;
-  /// Height of the stream currently playing (0 if unknown).
-  int _currentStreamHeight = 0;
-  /// One-shot quality for current item only (stall accept); does not persist.
-  int? _sessionQualityCap;
-  /// Stall detection for "try lower quality?" prompt (user must confirm).
-  int _stallTicks = 0;
-  bool _stallPromptOpen = false;
-  bool _stallPromptDismissedForItem = false;
-  /// Ignore stall until this timestamp (ms since epoch).
-  int _stallArmedAfterMs = 0;
   PlayerChrome? _chrome;
   String get _cacheKey => widget.kind.name;
-
-  int get _effectiveQualityCap =>
-      _sessionQualityCap ?? context.read<AppSettings>().qualityCap;
 
   Map<String, String> get _httpHeaders {
     switch (widget.kind) {
@@ -192,15 +179,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
         state == AppLifecycleState.hidden) {
       _controller?.pause();
       WakelockPlus.disable();
-      // Background freezes progress — don't treat as stall when returning.
-      _stallTicks = 0;
-      _stallPromptOpen = false;
-      _stallArmedAfterMs =
-          DateTime.now().millisecondsSinceEpoch + 5000;
     } else if (state == AppLifecycleState.resumed && _active) {
-      _stallTicks = 0;
-      _stallArmedAfterMs =
-          DateTime.now().millisecondsSinceEpoch + 5000;
       _controller?.play();
       WakelockPlus.enable();
     }
@@ -392,12 +371,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _totalTime = '0:00';
       _speedLabel = '';
     });
-    _currentStreamHeight = 0;
-    _stallTicks = 0;
-    _stallPromptDismissedForItem = false;
-    // Arm stall detection after intro window (~4s), avoids open-buffer false alarms.
-    _stallArmedAfterMs =
-        DateTime.now().millisecondsSinceEpoch + 4000;
     _sliderValue.value = 0;
     _currentTime.value = '0:00';
 
@@ -434,9 +407,11 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       return;
     }
 
-    final cap = _effectiveQualityCap;
-    final candidates = PlaybackHelpers.streamCandidates(detail, cap);
-    if (candidates.isEmpty) {
+    // Quality: only what user set in settings. No auto fallback / stall switch.
+    final cap = context.read<AppSettings>().qualityCap;
+    final stream =
+        PlaybackHelpers.pickStream(detail, cap) ?? detail.bestStream;
+    if (stream == null) {
       setState(() => _pageLoading = false);
       PlaybackHelpers.toast(context, '无可用播放地址，已跳过');
       _scheduleSkipToNext(index);
@@ -444,61 +419,40 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     }
 
     _currentDetail = detail;
+    _baseSpeed = _estimateBaseSpeed(stream.height);
 
-    VideoPlayerController? ctrl;
-    StreamQuality? stream;
-    var triedFallback = false;
-    for (final c in candidates) {
-      if (!mounted || seq != _loadSeq || !_active) {
-        await ctrl?.dispose();
-        return;
-      }
-      final next = VideoPlayerController.networkUrl(
-        Uri.parse(c.url),
-        httpHeaders: _httpHeaders,
-        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      );
+    final player = VideoPlayerController.networkUrl(
+      Uri.parse(stream.url),
+      httpHeaders: _httpHeaders,
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+    );
+    try {
+      await player.initialize();
+    } catch (_) {
       try {
-        await next.initialize();
-        if (triedFallback && mounted) {
-          PlaybackHelpers.toast(context, '已切换到 ${c.label}');
-        }
-        ctrl = next;
-        stream = c;
-        break;
-      } catch (_) {
-        triedFallback = true;
-        try {
-          await next.dispose();
-        } catch (_) {}
-      }
-    }
-    if (ctrl == null || stream == null) {
+        await player.dispose();
+      } catch (_) {}
       if (mounted && seq == _loadSeq) {
         setState(() => _pageLoading = false);
-        PlaybackHelpers.toast(context, '播放器初始化失败，已跳过');
+        PlaybackHelpers.toast(context, '播放失败，可在设置中手动换画质后重试');
         _scheduleSkipToNext(index);
       }
       return;
     }
-    _baseSpeed = _estimateBaseSpeed(stream.height);
-    _currentStreamHeight = stream.height;
     if (!mounted || seq != _loadSeq || !_active) {
-      await ctrl.dispose();
+      await player.dispose();
       return;
     }
 
     _failStreak = 0;
     _muted = context.read<AppSettings>().muted;
-    ctrl.setVolume(_muted ? 0 : 1);
+    player.setVolume(_muted ? 0 : 1);
     final skip = context.read<AppSettings>().skipIntro;
-    await PlaybackHelpers.skipIntro(ctrl, enabled: skip);
+    await PlaybackHelpers.skipIntro(player, enabled: skip);
     if (!mounted || seq != _loadSeq || !_active) {
-      await ctrl.dispose();
+      await player.dispose();
       return;
     }
-    // Non-null after the null check above (loop-assigned locals need bang for analyzer).
-    final VideoPlayerController player = ctrl!;
     _controller = player;
     setState(() {
       _pageLoading = false;
@@ -559,26 +513,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
             _lastSpeedLabel = label;
             if (mounted) setState(() => _speedLabel = label);
           }
-        }
-        // Stall: playing but position barely advances (buffering / lag).
-        // Do NOT auto-switch quality — only prompt; user must confirm.
-        final isPlaying = ctrl.value.isPlaying;
-        final nearEnd = posMs >= dur.inMilliseconds - 800;
-        final armed = now >= _stallArmedAfterMs;
-        if (armed &&
-            isPlaying &&
-            !nearEnd &&
-            dMs >= 150 &&
-            dPlayed < 40 &&
-            posMs > 2000) {
-          _stallTicks++;
-        } else if (dPlayed >= 80) {
-          _stallTicks = 0;
-        }
-        if (_stallTicks >= 12) {
-          _stallTicks = 0;
-          // ignore: unawaited_futures
-          _maybePromptLowerQuality();
         }
       }
       _lastBufferedMs = bufMs;
@@ -690,10 +624,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       _seeking = false;
       return;
     }
-    // Cool down stall prompt after seek (buffer refill is normal).
-    _stallTicks = 0;
-    _stallArmedAfterMs =
-        DateTime.now().millisecondsSinceEpoch + 3000;
     final durMs = c.value.duration.inMilliseconds;
     if (durMs <= 0) {
       _seeking = false;
@@ -730,64 +660,6 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
     setState(() {});
   }
 
-  /// Detected lag: ask user before lowering quality. Dismiss = keep current.
-  /// Accept only applies to **this item** (session cap), not global settings.
-  Future<void> _maybePromptLowerQuality() async {
-    if (!mounted || _stallPromptOpen || _stallPromptDismissedForItem) return;
-    if (!context.read<AppSettings>().promptOnStall) return;
-    final detail = _currentDetail;
-    if (detail == null || detail.streams.isEmpty) return;
-    final curH = _currentStreamHeight;
-    if (curH <= 0) return;
-    final lower = detail.streams
-        .where((s) => s.height > 0 && s.height < curH)
-        .toList()
-      ..sort((a, b) => b.height.compareTo(a.height));
-    if (lower.isEmpty) return;
-
-    final target = lower.first;
-    _stallPromptOpen = true;
-    try {
-      final ok = await showDialog<bool>(
-        context: context,
-        barrierDismissible: true,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF2A2A2A),
-          title: const Text('播放较卡', style: TextStyle(color: Colors.white)),
-          content: Text(
-            '检测到卡顿。是否切换到更低清晰度 ${target.label}？\n'
-            '仅影响本条视频。点「继续」将按当前画质继续播（可能仍卡）。',
-            style: const TextStyle(color: Colors.white70, height: 1.35),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('继续'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text('切换到 ${target.label}'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted) return;
-      if (ok == true) {
-        _sessionQualityCap = target.height;
-        if (mounted) {
-          PlaybackHelpers.toast(context, '正在切换到 ${target.label}（仅本条）');
-          // ignore: unawaited_futures
-          _playIndex(_currentIndex);
-        }
-      } else {
-        // User declined or dismissed — do not auto-switch; don't nag this item.
-        _stallPromptDismissedForItem = true;
-      }
-    } finally {
-      _stallPromptOpen = false;
-    }
-  }
-
   void _openPlayerSettings() {
     final detail = _currentDetail;
     final heights = <int>[];
@@ -800,8 +672,7 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       context,
       qualityHeights: heights.isEmpty ? null : heights,
       onQualityChanged: () {
-        // Manual quality from settings is global preference + re-open current.
-        _sessionQualityCap = null;
+        // Manual only: re-open current with new quality from settings.
         if (mounted) _playIndex(_currentIndex);
       },
     );
