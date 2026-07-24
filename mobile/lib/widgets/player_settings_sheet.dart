@@ -65,13 +65,46 @@ Future<void> showPlayerSettingsSheet(
                       onChanged: settings.setSkipIntro,
                     ),
                     const Divider(color: Colors.white12),
+                    // C: 代理状态一眼懂
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2A2A2A),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            settings.networkStatusTitle,
+                            style: const TextStyle(
+                              color: Color(0xFFFF6B35),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            settings.networkStatusDetail,
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     const ListTile(
                       title: Text('网络代理',
                           style:
                               TextStyle(color: Colors.white70, fontSize: 13)),
                       subtitle: Text(
-                        '默认跟随系统：能读到系统/VPN 下发的代理就用，读不到就直连。'
-                        '不写死任何主机或端口。也可手动填写；已开 TUN 可关闭此项。',
+                        '默认跟随系统代理（不写死地址）。读不到则直连。'
+                        '已开 TUN 可关掉此项。列表通但播不动时，可开 TUN 或换 HTTP 代理。',
                         style: TextStyle(color: Colors.white38, fontSize: 11),
                       ),
                       dense: true,

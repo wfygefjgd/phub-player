@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -82,26 +83,52 @@ class MitaoApi {
 
     final seen = <String>{...?exclude};
     final results = <VideoItem>[];
+    var failCount = 0;
+    var tried = 0;
 
-    for (final p in ordered) {
-      final url = p <= 1
-          ? '$base/index.php/vod/type/id/$zhongTypeId.html'
-          : '$base/index.php/vod/type/id/$zhongTypeId/page/$p.html';
-      try {
-        final html = await _getHtml(url);
-        results.addAll(_parseList(html, seen));
-      } catch (_) {
-        // try alternate page pattern
-        if (p > 1) {
-          try {
-            final alt =
-                '$base/index.php/vod/type/id/$zhongTypeId.html?page=$p';
-            final html = await _getHtml(alt);
-            results.addAll(_parseList(html, seen));
-          } catch (_) {}
+    Future<void> run() async {
+      for (final p in ordered) {
+        tried++;
+        final url = p <= 1
+            ? '$base/index.php/vod/type/id/$zhongTypeId.html'
+            : '$base/index.php/vod/type/id/$zhongTypeId/page/$p.html';
+        try {
+          final html = await _getHtml(url);
+          results.addAll(_parseList(html, seen));
+        } catch (_) {
+          failCount++;
+          if (p > 1) {
+            try {
+              final alt =
+                  '$base/index.php/vod/type/id/$zhongTypeId.html?page=$p';
+              final html = await _getHtml(alt);
+              results.addAll(_parseList(html, seen));
+            } catch (_) {
+              failCount++;
+            }
+          }
         }
+        if (results.length >= limit) break;
       }
-      if (results.length >= limit) break;
+    }
+
+    final hardTimeout = maxPages <= 2
+        ? const Duration(seconds: 16)
+        : const Duration(seconds: 28);
+    try {
+      await run().timeout(hardTimeout);
+    } on TimeoutException {
+      if (results.isEmpty) {
+        throw PhubException(
+          '加载超时。可：设置→重新检测代理，或开 TUN/VPN',
+        );
+      }
+    }
+    if (results.isEmpty && (failCount > 0 || tried > 0)) {
+      throw PhubException(
+        '无法访问源站（$failCount/$tried 失败）。'
+        '系统未代理时请开 TUN，或设置里填写/检测代理',
+      );
     }
 
     results.shuffle(rng);

@@ -172,7 +172,10 @@ class PhubApi {
     final results = <VideoItem>[];
     var tried = 0;
     var failCount = 0;
-    const concurrency = 3;
+    // Cold start uses small maxUrls → fewer parallel + shorter timeout.
+    final concurrency = maxUrls <= 2 ? 2 : 3;
+    final hardTimeout =
+        maxUrls <= 2 ? const Duration(seconds: 16) : const Duration(seconds: 28);
 
     Future<List<VideoItem>> runBatches() async {
       for (var i = 0; i < ordered.length && tried < maxUrls;) {
@@ -200,24 +203,27 @@ class PhubApi {
           results.addAll(_parseVideoListHtml(html, seen));
           if (results.length >= limit) break;
         }
+        // Enough for first paint — stop early.
+        if (results.length >= (limit < 12 ? limit : 8)) break;
       }
       return results;
     }
 
-    // Hard cap so the UI never spins for minutes when the network is blocked.
     try {
-      await runBatches().timeout(const Duration(seconds: 28));
+      await runBatches().timeout(hardTimeout);
     } on TimeoutException {
       if (results.isEmpty) {
-        throw PhubException('加载超时，请检查网络或系统 VPN 后重试');
+        throw PhubException(
+          '加载超时。可：设置→重新检测代理，或开 TUN/VPN',
+        );
       }
     }
 
     if (results.isEmpty) {
       if (failCount > 0 || tried > 0) {
         throw PhubException(
-          '无法访问源站（请求失败 $failCount/$tried）。'
-          '请开 TUN/VPN，或在设置中启用「本地代理」',
+          '无法访问源站（$failCount/$tried 失败）。'
+          '系统未代理时请开 TUN，或设置里填写/检测代理',
         );
       }
       return [];

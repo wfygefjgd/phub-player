@@ -64,6 +64,29 @@ class AppSettings extends ChangeNotifier {
     return '${_proxyType.toUpperCase()} $_proxyHost:$_proxyPort$note';
   }
 
+  /// One-line status for settings header (一眼懂).
+  String get networkStatusTitle {
+    if (!_proxyEnabled) return '当前：直连（仅系统路由 / TUN）';
+    if (!hasProxyEndpoint) return '当前：直连 · 系统未下发代理';
+    return '当前：$_proxyType $_proxyHost:$_proxyPort';
+  }
+
+  String get networkStatusDetail {
+    if (!_proxyEnabled) {
+      return '列表与详情不走 App 代理。已开全局 TUN 时通常够用。';
+    }
+    if (!hasProxyEndpoint) {
+      return '开关开着但没有可用主机:端口 → 实际仍直连。'
+          '可点「重新检测」，或手动填写；'
+          '仅浏览器代理时系统往往检测不到。';
+    }
+    final jvm = _proxyType == 'http'
+        ? '列表/详情走代理；播放会尽力跟 HTTP 代理。'
+        : '列表/详情走 SOCKS；播放器可能不跟 SOCKS，播不动时可开 TUN。';
+    final note = _proxyAutoNote.isEmpty ? '' : '（$_proxyAutoNote）';
+    return '$jvm$note';
+  }
+
   void _syncHttpClient() {
     // Only enable Dio proxy when we actually have a real endpoint.
     final use = _proxyEnabled && hasProxyEndpoint;

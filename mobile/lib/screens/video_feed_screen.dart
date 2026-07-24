@@ -224,8 +224,9 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
   }
 
   Future<List<VideoItem>> _fetchBatch({required bool isCold}) {
-    final limit = isCold ? 12 : 30;
-    final maxUrls = isCold ? 3 : 6;
+    // Cold: few URLs, fail fast (less spinner). Warm: more variety.
+    final limit = isCold ? 10 : 30;
+    final maxUrls = isCold ? 2 : 5;
     switch (widget.kind) {
       case VideoFeedKind.asian:
         return context.read<PhubApi>().fetchAsian(
@@ -435,7 +436,13 @@ class VideoFeedScreenState extends State<VideoFeedScreen>
       } catch (_) {}
       if (mounted && seq == _loadSeq) {
         setState(() => _pageLoading = false);
-        PlaybackHelpers.toast(context, '播放失败，可在设置中手动换画质后重试');
+        final net = context.read<AppSettings>();
+        final tip = net.proxyEnabled && net.hasProxyEndpoint
+            ? (net.proxyType == 'socks5'
+                ? '列表可能已通，但播放器常不跟 SOCKS。可开 TUN，或改用 HTTP 代理后重试'
+                : '列表可能已通，播放仍失败。可开 TUN，或检查代理是否支持视频流')
+            : '播放失败。若列表能出、播不动：开 TUN，或设置里配置 HTTP 代理';
+        PlaybackHelpers.toast(context, tip, duration: const Duration(seconds: 3));
         _scheduleSkipToNext(index);
       }
       return;

@@ -132,17 +132,21 @@ class XvideosApi {
       }
     }
 
+    final hardTimeout =
+        maxUrls <= 2 ? const Duration(seconds: 16) : const Duration(seconds: 28);
     try {
-      await run().timeout(const Duration(seconds: 28));
+      await run().timeout(hardTimeout);
     } on TimeoutException {
       if (results.isEmpty) {
-        throw PhubException('加载超时，请检查网络或系统 VPN 后重试');
+        throw PhubException(
+          '加载超时。可：设置→重新检测代理，或开 TUN/VPN',
+        );
       }
     }
     if (results.isEmpty && (failCount > 0 || tried > 0)) {
       throw PhubException(
-        '无法访问源站（请求失败 $failCount/$tried）。'
-        '请开 TUN/VPN，或在设置中启用「本地代理」',
+        '无法访问源站（$failCount/$tried 失败）。'
+        '系统未代理时请开 TUN，或设置里填写/检测代理',
       );
     }
     results.shuffle(rng);
